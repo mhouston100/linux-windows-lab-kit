@@ -1,0 +1,9 @@
+# First-boot notes (VirtualBox)
+
+1. Start **HYD-DC1**, wait until AD/DNS are up (several minutes on first boot).
+2. Start **HYD-CM1**, then **HYD-GW1**.
+3. Log on as `{{LAB_DOMAIN}}\{{LAB_ADMIN_USER}}` (or local `Administrator`) using the password from `config/lab.env`.
+4. Guest additions: install VirtualBox Guest Additions inside each VM if clipboard/shared folders are needed.
+5. Clients (later): create differencing disks from `WindowsParent.vdi`, apply rendered unattend from `{{IDENTITY_DIR}}/`.
+
+Ordered control: `./scripts/lab-ctl.sh start|stop|status`

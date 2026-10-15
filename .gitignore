@@ -1,0 +1,47 @@
+# Microsoft lab media (never commit)
+*.zip
+*.zpaq
+*.iso
+*.wim
+*.esd
+*.exe
+*.msi
+*.cab
+
+# Disk images / converted disks
+*.vhd
+*.vhdx
+*.vdi
+*.vmdk
+*.qcow2
+*.img
+*.raw
+
+# Extracted / working trees (never store lab media in the repo)
+/work/
+/cache/
+/downloads/
+/extracted/
+/.lab/
+
+# Local secrets / overrides
+.env
+.env.*
+config/lab.env
+config/local.*
+config/secrets.*
+!.env.example
+
+# .NET build outputs
+tools/**/bin/
+tools/**/obj/
+*.user
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/
+*.log

@@ -1,0 +1,5 @@
+# name	order	wait_seconds	notes
+# Ordered start (low → high). Stop runs in reverse.
+HYD-DC1	10	90	Domain controller — wait for AD/DNS
+HYD-CM1	20	60	MECM / SQL after DC
+HYD-GW1	30	30	Gateway last
