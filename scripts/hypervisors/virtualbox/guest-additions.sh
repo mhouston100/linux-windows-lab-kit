@@ -27,8 +27,9 @@ ga_sudo_begin() {
     return 0
   fi
   if ! sudo -n true 2>/dev/null; then
-    log "Administrator password needed to mount guest disks (sudo)."
+    log "Administrator password needed to mount guest disks. It is not stored."
     if [[ -r /dev/tty && -w /dev/tty ]]; then
+      printf '\nPassword for sudo. Used only to mount guest disks. It is not stored.\n' >/dev/tty
       sudo -v </dev/tty >/dev/tty
     else
       sudo -v
@@ -37,23 +38,10 @@ ga_sudo_begin() {
   ga_root_start
 }
 
-ga_sudo_keepalive_start() {
-  [[ -n "${GA_SUDO_KEEPALIVE:-}" ]] && return 0
-  (
-    while true; do
-      sudo -n -v 2>/dev/null || exit 0
-      sleep 30
-    done
-  ) &
-  GA_SUDO_KEEPALIVE=$!
-}
-
-ga_sudo_keepalive_stop() {
-  if [[ -n "${GA_SUDO_KEEPALIVE:-}" ]]; then
-    kill "$GA_SUDO_KEEPALIVE" 2>/dev/null || true
-    wait "$GA_SUDO_KEEPALIVE" 2>/dev/null || true
-    GA_SUDO_KEEPALIVE=""
-  fi
+# Stop the mount helper. The sudo ticket is not refreshed: after sudo's own
+# timeout, passwordless sudo ends. Mounts keep working through the helper
+# until this runs.
+ga_sudo_end() {
   ga_root_stop
 }
 
@@ -127,7 +115,7 @@ ga_enable_features() {
   state="$(ga_vm_state "$name")"
   case "$state" in
     running|paused)
-      VBoxManage controlvm "$name" clipboard bidirectional
+      VBoxManage controlvm "$name" clipboard mode bidirectional
       VBoxManage controlvm "$name" draganddrop bidirectional
       ;;
     *)

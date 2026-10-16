@@ -160,11 +160,12 @@ hv_stage_needs_privileges() {
 
 hv_prepare_privileged() {
   ga_sudo_begin
-  ga_sudo_keepalive_start
 }
 
 hv_finish_privileged() {
-  if declare -F ga_sudo_keepalive_stop >/dev/null; then
-    ga_sudo_keepalive_stop
+  # A full run holds the helper across stages. Do not stop it between them.
+  [[ "${GA_PRIV_HOLD:-0}" == 1 ]] && return 0
+  if declare -F ga_sudo_end >/dev/null; then
+    ga_sudo_end
   fi
 }

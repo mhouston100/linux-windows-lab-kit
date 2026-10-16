@@ -527,8 +527,36 @@ tui_run_stage() {
   return "$rc"
 }
 
+# True when a later stage in this run still has to mount a guest disk.
+tui_run_will_need_privileges() {
+  local id
+  for id in 1 2 3 4 5 6; do
+    [[ "$(tui_stage_state "$id")" == "done" ]] && continue
+    if hv_stage_needs_privileges "$id"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+tui_priv_release() {
+  if [[ "${GA_PRIV_HOLD:-0}" == 1 ]]; then
+    GA_PRIV_HOLD=0
+    hv_finish_privileged
+  fi
+}
+
 tui_run_all() {
-  local id state
+  local id state rc=0
+  hv_load
+  if tui_run_will_need_privileges; then
+    tui_log warn "Sudo is needed to mount guest disks. Asking now, before the long stages."
+    [[ -t 1 && "$TUI_ALT" -eq 1 ]] && tui_draw
+    printf '\033[?25h'
+    GA_PRIV_HOLD=1
+    hv_prepare_privileged
+    printf '\033[?25l'
+  fi
   for id in 1 2 3 4 5 6; do
     state="$(tui_stage_state "$id")"
     if [[ "$state" == "done" ]]; then
@@ -539,10 +567,16 @@ tui_run_all() {
     if [[ "$state" == "blocked" ]]; then
       tui_log error "$(tui_block_reason "$id")"
       [[ -t 1 && "$TUI_ALT" -eq 1 ]] && tui_draw
-      return 1
+      rc=1
+      break
     fi
-    tui_run_stage "$id" || return $?
+    if ! tui_run_stage "$id"; then
+      rc=$?
+      break
+    fi
   done
+  tui_priv_release
+  [[ "$rc" -eq 0 ]] || return "$rc"
   tui_log ok "Run all finished."
   [[ -t 1 && "$TUI_ALT" -eq 1 ]] && tui_draw
   return 0

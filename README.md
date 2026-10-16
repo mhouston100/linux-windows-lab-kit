@@ -138,7 +138,7 @@ On VirtualBox each VM is registered under `VM_ROOT`, given the memory and CPU co
 
 If the VM already exists and its disk is attached, creation is skipped. `--force` unregisters it and creates it again. If the VM exists without that disk, the disk is attached and creation is not repeated.
 
-Before the smoke boot, the VirtualBox backend mounts the new disk and plants Guest Additions. Mounting uses `qemu-nbd` and is the step that asks for sudo. Reading the Guest Additions ISO and writing the offline registry do not. The mount helper is started on the real terminal so the password prompt still works while the stage log is being captured.
+Before the smoke boot, the VirtualBox backend mounts the new disk and plants Guest Additions. Mounting uses `qemu-nbd`. A full run asks for the sudo password once at the start, before extract and convert, and a stage 3 or stage 5 run on its own asks at the start of that stage. The password is not stored. A root helper then accepts only the disk-mount commands, and the sudo ticket is left to expire on its own. Reading the Guest Additions ISO and writing the offline registry do not need sudo.
 
 The plant is a copy of the installer and `install-guest-additions.ps1` under `C:\Windows\Temp\vbox-ga` on the guest, plus a one-time autologon of `LabAdmin` and a RunOnce entry that runs the installer. The installer adds the VirtualBox publisher certificate, runs `VBoxWindowsAdditions-amd64.exe` silently, clears the stored password, and reboots. The stage then waits until VirtualBox reports the additions service (up to 30 minutes by default). A reboot during that wait is expected. When the service reports in, the script turns on auto-resize of the guest display, the shared clipboard, and drag-and-drop. The smoke VM is HYD-GW1. It is powered off after the additions service reports in.
 
@@ -208,7 +208,7 @@ Shared code asks the backend to do hypervisor work. It does not call `VBoxManage
 | `hv_close_lab_media` | Unregister disks, ISOs, and floppies under the lab directories |
 | `hv_set_description`, `hv_description_ok` | VM description |
 | `hv_stage_needs_privileges` | Stages 3 and 5, for the disk mount |
-| `hv_prepare_privileged`, `hv_finish_privileged` | sudo timestamp and the mount helper |
+| `hv_prepare_privileged`, `hv_finish_privileged` | Ask for sudo once and run the mount helper |
 
 `scripts/create-lab-vms.sh` and `scripts/lab-ctl.sh` stay the public commands. They load `scripts/hypervisors/$HYPERVISOR/load.sh` and run that backend's create and control scripts.
 

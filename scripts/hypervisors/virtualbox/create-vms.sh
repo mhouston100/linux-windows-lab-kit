@@ -201,10 +201,15 @@ create_one_vm() {
 }
 
 smoke_one() {
-  local name="$1"
+  local name="$1" state
   ga_prepare_vm "$name"
-  log "Smoke: starting $name headless"
-  VBoxManage startvm "$name" --type headless
+  state="$(ga_vm_state "$name")"
+  if [[ "$state" == "running" || "$state" == "paused" ]]; then
+    log "Smoke: $name is already $state"
+  else
+    log "Smoke: starting $name headless"
+    VBoxManage startvm "$name" --type headless
+  fi
   ga_wait_vm "$name"
   log "Smoke: Guest Additions ready on $name — powering off"
   VBoxManage controlvm "$name" poweroff
