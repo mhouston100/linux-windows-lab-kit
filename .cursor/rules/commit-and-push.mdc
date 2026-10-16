@@ -1,0 +1,13 @@
+---
+description: When the user asks for a commit, also push the current branch
+alwaysApply: true
+---
+
+# Commit means push
+
+When the user asks for a commit, commit and then push that commit to the remote tracking branch.
+
+- Push the current branch only. Do not switch branches to push.
+- Use a normal push. Do not force-push.
+- If the branch has no upstream, push with `-u` to `origin` and the current branch name.
+- If the push fails, say so and leave the local commit in place.
