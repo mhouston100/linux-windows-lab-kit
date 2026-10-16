@@ -227,6 +227,7 @@ templates/                      # identity notes and client unattend
 tools/VhdxFlatten/              # differencing VHDX flattener
 tools/HiveSet/                  # offline registry writer
 third_party/nuget/              # DiscUtils and Registry packages, MIT
+third_party/gum/                # Gum 2.0.2 binary and license notices
 docs/SPEC.md                    # short spec
 ```
 
@@ -235,6 +236,8 @@ Build output under `tools/**/bin` and `tools/**/obj` is gitignored. So are `conf
 ## Included software
 
 `third_party/nuget/` holds DiscUtils 0.16.13 (Kenneth Bell, Quamotion, LordMike, and other contributors) and `Microsoft.Win32.Registry` 5.0.0. Both are MIT licensed. The notice is `third_party/nuget/LICENSE.txt`. `nuget.config` resolves those packages from the repository and leaves nuget.org available for the .NET SDK's own targeting packs.
+
+`third_party/gum/2.0.2/` holds the Gum 2.0.2 Linux amd64 binary from the upstream release archive. Gum is MIT, copyright Charmbracelet, Inc., and that notice is `LICENSE` beside the binary. `licenses/` holds the MIT and BSD-3-Clause notices for the Go modules linked into the binary. Those files stay with any copy of the binary. `SOURCE.txt` records the archive URL, the checksum, and that requirement. The script does not call Gum yet.
 
 The orchestration is Bash. There is no Python or Node dependency.
 
