@@ -34,9 +34,10 @@ Client VMs (domain-joined and workgroup Windows 11 machines built from `WindowsP
 |-----|--------|
 | `1`–`6` | Run that stage |
 | `a` | Run every stage that has not passed yet, in order |
+| `c` | Reset this lab, after you type `YES` |
 | `q` | Leave the menu |
 
-Each stage has its own progress bar. Gray means waiting, orange means running or blocked, green with a tick means the checkpoint passed, and red means the stage failed. A stage whose dependency has not passed stays orange and is refused. The bottom pane is the log. The same lines are appended to `tmp/lab.log` under the destination (default `/virtualmachines/tmp/lab.log`) and remain after you quit. Interrupt a running stage and the menu comes back; the stage's marker is left unset, so the next run retries it.
+Each stage has its own progress bar. Gray means waiting, orange means running or blocked, green with a tick means the checkpoint passed, and red means the stage failed. A stage whose dependency has not passed stays orange and is refused. The bottom pane is the log. The same lines are appended to `tmp/lab.log` under the destination (default `/virtualmachines/tmp/lab.log`). That file stays when you quit and when you reset the lab. Interrupt a running stage and the menu comes back; the stage's marker is left unset, so the next run retries it.
 
 From a shell without a terminal, `./scripts/lab.sh` prints the checklist and exits 0 only when every marker is present.
 
@@ -139,7 +140,7 @@ If the VM already exists and its disk is attached, creation is skipped. `--force
 
 Before the smoke boot, the VirtualBox backend mounts the new disk and plants Guest Additions. Mounting uses `qemu-nbd` and is the step that asks for sudo. Reading the Guest Additions ISO and writing the offline registry do not. The mount helper is started on the real terminal so the password prompt still works while the stage log is being captured.
 
-The plant is a copy of the installer and `install-guest-additions.ps1` under `C:\Windows\Temp\vbox-ga` on the guest, plus a one-time autologon of `LabAdmin` and a RunOnce entry that runs the installer. The installer adds the VirtualBox publisher certificate, runs `VBoxWindowsAdditions-amd64.exe` silently, clears the stored password, and reboots. The stage then waits until VirtualBox reports the additions service (up to 30 minutes by default). A reboot during that wait is expected. The smoke VM is HYD-GW1. It is powered off after the additions service reports in.
+The plant is a copy of the installer and `install-guest-additions.ps1` under `C:\Windows\Temp\vbox-ga` on the guest, plus a one-time autologon of `LabAdmin` and a RunOnce entry that runs the installer. The installer adds the VirtualBox publisher certificate, runs `VBoxWindowsAdditions-amd64.exe` silently, clears the stored password, and reboots. The stage then waits until VirtualBox reports the additions service (up to 30 minutes by default). A reboot during that wait is expected. When the service reports in, the script turns on auto-resize of the guest display, the shared clipboard, and drag-and-drop. The smoke VM is HYD-GW1. It is powered off after the additions service reports in.
 
 The registry writer is `tools/HiveSet`. It uses the MIT-licensed DiscUtils packages stored in `third_party/nuget`, so that build does not download them. The .NET SDK may still contact NuGet for its own targeting packs.
 
@@ -174,19 +175,24 @@ Phase 5 runs health, a start with `--no-wait`, and a stop, then checks that the 
 
 ## Stage 6 — Cleanup safety, and reclaiming space
 
-Phase 6 does not delete the lab. It checks that `cleanup-lab.sh` refuses to run without `--yes`, refuses to run when nothing is selected, and that the three lab VMs are still present.
+Phase 6 does not delete the lab. It checks that `cleanup-lab.sh` refuses to run without `--yes`, refuses to run when nothing is selected, refuses `--reset` without `--yes`, and that the three lab VMs are still present.
 
-To actually remove this lab's work:
+Press `c` in the menu to reset the lab. The menu asks you to type `YES` on the terminal, then deletes:
+
+- every VM named by an active row in `config/topology.tsv`, after powering it off
+- that VM's folder under the destination
+- `source/`, and everything under `tmp/` except `lab.log` (markers and the Guest Additions cache are removed)
+- VirtualBox media still registered under those paths
+
+The kit ZIP stays. The destination itself stays, so other virtual machines on the host stay. A name is removed only when it is in the topology and starts with `LAB_PREFIX`. The same reset from a shell is:
 
 ```bash
-./scripts/cleanup-lab.sh --all-work --yes
+./scripts/cleanup-lab.sh --reset --yes
 ```
 
-That unregisters and deletes only the VMs named in `config/topology.tsv`, and removes `tmp/zpaq`, `tmp/setup`, `tmp/organized`, `tmp/convert`, `tmp/identity`, and `tmp/.markers`. `source/` and the original ZIP are kept. Other flags are `--vms`, `--tmp`, `--convert`, and `--identity`. On an interactive terminal you also type `YES`.
+On an interactive terminal that command also asks you to type `YES`. `a` does not run this. After a reset the markers are gone, so the next build starts at stage 1.
 
-Cleanup never receives a list of unrelated virtual machines. On this host that means `DC-DC-V001` and `DC-MECM-V001` are outside the topology and are left alone.
-
-A full reset of extracted files, when you want those gone too, is the cleanup command above plus removing `source/` and `tmp/` yourself. Do that only after the lab VMs are unregistered, so VirtualBox is not left holding disks that no longer exist.
+`--all-work` still means the VMs plus the scratch trees under `tmp/`, and it leaves `source/` in place. Other flags are `--vms`, `--tmp`, `--convert`, and `--identity`.
 
 ## Hypervisor backends
 
@@ -199,6 +205,7 @@ Shared code asks the backend to do hypervisor work. It does not call `VBoxManage
 | `hv_verify_disk` | Open the converted medium |
 | `hv_verify_create` | VM registered, SATA disk attached, CorpNet on nic1, NAT on the gateway |
 | `hv_vm_exists`, `hv_vm_state`, `hv_delete_vm` | Query and unregister |
+| `hv_close_lab_media` | Unregister disks, ISOs, and floppies under the lab directories |
 | `hv_set_description`, `hv_description_ok` | VM description |
 | `hv_stage_needs_privileges` | Stages 3 and 5, for the disk mount |
 | `hv_prepare_privileged`, `hv_finish_privileged` | sudo timestamp and the mount helper |

@@ -40,6 +40,8 @@ Stages:
   4 identity   after stage 3
   5 run lab    after stage 4 (powers VMs on, then off)
   6 cleanup    after stage 3 (checks the safety gates; does not delete)
+
+The menu key c resets this lab after you type YES. It is not a stage, and all does not run it.
 EOF
 }
 

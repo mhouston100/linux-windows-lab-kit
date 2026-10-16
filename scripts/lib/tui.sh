@@ -362,10 +362,12 @@ tui_draw() {
     shown=$((shown + 1))
   done
 
-  if [[ -n "$TUI_RUNNING" ]]; then
+  if [[ "$TUI_RUNNING" == "reset" ]]; then
+    tui_row "$C_ORANGE" "Resetting this lab. Interrupt returns to the menu." "$cols" 0
+  elif [[ -n "$TUI_RUNNING" ]]; then
     tui_row "$C_ORANGE" "Running stage ${TUI_RUNNING}. Interrupt returns to the menu." "$cols" 0
   else
-    tui_row "$C_BOLD" "Press 1-6, a = run all, q = quit" "$cols" 0
+    tui_row "$C_BOLD" "Press 1-6, a = run all, c = reset lab, q = quit" "$cols" 0
   fi
   printf '\033[J'
 }
@@ -546,13 +548,56 @@ tui_run_all() {
   return 0
 }
 
+# YES is read on the real terminal. A stage's captured pty cannot see the keyboard.
+tui_confirm_reset() {
+  local reply=""
+  tui_log warn "Reset deletes the lab VMs, their folders, and source/. tmp is cleared except lab.log. The kit ZIP is kept."
+  [[ -t 1 && "$TUI_ALT" -eq 1 ]] && tui_draw
+  printf '\033[?25h'
+  stty echo icanon isig 2>/dev/null || true
+  printf '%bType YES to reset this lab: %b' "$C_BOLD" "$C_RESET" >/dev/tty
+  IFS= read -r reply </dev/tty || reply=""
+  if [[ -n "$TUI_STTY" && -t 0 ]]; then
+    stty "$TUI_STTY" 2>/dev/null || true
+  fi
+  printf '\033[?25l'
+  if [[ "$reply" != "YES" ]]; then
+    tui_log warn "Reset cancelled."
+    return 1
+  fi
+  return 0
+}
+
+tui_run_reset() {
+  local rc cmd
+  tui_log warn "Resetting the lab."
+  TUI_RUNNING="reset"
+  TUI_LIVE_PCT=""
+  cmd="$(printf '%q ' env LAB_NONINTERACTIVE=1 LAB_LOG_CAPTURE=1 "${SCRIPTS_DIR}/cleanup-lab.sh" --reset --yes)"
+  set +e
+  tui_capture "$cmd"
+  rc=$?
+  set -e
+  TUI_RUNNING=""
+  TUI_LIVE_PCT=""
+  if [[ "$rc" -eq 0 ]]; then
+    tui_log ok "Lab reset. Stages will run again from the start."
+  elif [[ "$rc" -eq 130 ]]; then
+    tui_log error "Reset interrupted."
+  else
+    tui_log error "Reset failed (exit ${rc})."
+  fi
+  [[ -t 1 ]] && tui_draw
+  return "$rc"
+}
+
 tui_menu() {
   local choice
   tui_enter
   trap 'tui_leave; exit 130' INT
   trap 'tui_leave' EXIT
   tui_log info "Session log: ${TMP_DIR:-<unset>}/lab.log"
-  tui_log info "Pick a stage. A blocked stage runs only after the stage it depends on has finished."
+  tui_log info "Pick a stage. A blocked stage runs only after the stage it depends on has finished. c resets this lab."
   while true; do
     TUI_RUNNING=""
     tui_draw
@@ -577,10 +622,13 @@ tui_menu() {
         tui_log warn "Selected stage $choice."
         tui_run_stage "$choice" || true
         ;;
+      c|C)
+        tui_confirm_reset && tui_run_reset || true
+        ;;
       "")
         ;;
       *)
-        tui_log warn "Enter 1-6, a, or q."
+        tui_log warn "Enter 1-6, a, c, or q."
         ;;
     esac
   done

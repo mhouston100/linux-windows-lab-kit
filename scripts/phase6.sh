@@ -21,8 +21,8 @@ Usage: phase6.sh [--kit ZIP] [--dest DIR]
 Verifies cleanup-lab.sh safety (refuses without --yes; does not delete).
 
 To actually reclaim space (explicit):
-  ./scripts/cleanup-lab.sh --all-work --yes
-  # or finer: --vms / --tmp / --convert / --identity
+  ./scripts/cleanup-lab.sh --reset --yes
+  # or finer: --all-work / --vms / --tmp / --convert / --identity
 
 $(lab_path_help)
 EOF

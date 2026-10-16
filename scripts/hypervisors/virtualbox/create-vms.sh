@@ -171,8 +171,7 @@ create_one_vm() {
     --boot3 none \
     --boot4 none \
     --rtcuseutc on \
-    --clipboard-mode bidirectional \
-    --draganddrop disabled
+    --mouse usbtablet
 
   # NIC1: CorpNet (internal)
   if [[ "$nic1" == "corp" ]]; then
@@ -196,6 +195,7 @@ create_one_vm() {
   fi
 
   ensure_disk_attached "$name" "$dest_disk"
+  ga_enable_features "$name"
 
   log "Created $name → $vm_dir"
 }

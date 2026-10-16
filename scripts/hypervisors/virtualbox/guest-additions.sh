@@ -74,12 +74,18 @@ ga_hive_record() {
 }
 
 ga_iso_path() {
-  local cand
+  local cand listed=""
+  if command -v VBoxManage >/dev/null 2>&1; then
+    listed="$(VBoxManage list systemproperties 2>/dev/null \
+      | sed -n 's/^Default Guest Additions ISO:[[:space:]]*//p' \
+      | head -n 1)"
+  fi
   for cand in \
+    "$listed" \
     /usr/lib/virtualbox/additions/VBoxGuestAdditions.iso \
     /usr/share/virtualbox/VBoxGuestAdditions.iso
   do
-    if [[ -f "$cand" ]]; then
+    if [[ -n "$cand" && -f "$cand" ]]; then
       printf '%s\n' "$cand"
       return 0
     fi
@@ -101,6 +107,7 @@ ga_vm_state() {
 }
 
 # Print runlevel and version. Empty version means the service has not reported in.
+# Levels from VirtualBox: 0 none, 1 drivers, 2 additions service, 3 desktop.
 ga_additions_info() {
   local name="$1" info run ver
   info="$(VBoxManage showvminfo "$name" --machinereadable 2>/dev/null || true)"
@@ -109,21 +116,58 @@ ga_additions_info() {
   printf '%s %s\n' "${run:-0}" "${ver:-}"
 }
 
+# Host-side switches for the additions features. The graphics controller and
+# video memory are chosen when the VM is created. Auto-resize, the shared
+# clipboard, and drag-and-drop are turned on once the guest service is up.
+# A running VM accepts the clipboard and drag-and-drop through controlvm.
+ga_enable_features() {
+  local name="$1" state
+  log "Enabling Guest Additions integration on $name"
+  VBoxManage setextradata "$name" GUI/AutoresizeGuest true
+  state="$(ga_vm_state "$name")"
+  case "$state" in
+    running|paused)
+      VBoxManage controlvm "$name" clipboard bidirectional
+      VBoxManage controlvm "$name" draganddrop bidirectional
+      ;;
+    *)
+      VBoxManage modifyvm "$name" \
+        --clipboard-mode bidirectional \
+        --draganddrop bidirectional \
+        --mouse usbtablet
+      ;;
+  esac
+}
+
+# The host can see this without guestcontrol. guestcontrol cannot install the
+# additions the first time, because that channel does not exist until they do.
+ga_additions_ready() {
+  local info run ver
+  info="$(ga_additions_info "$1")"
+  run="${info%% *}"
+  ver="${info#* }"
+  [[ -n "$ver" && "$ver" != "None" && "${run:-0}" -ge 2 ]]
+}
+
 ga_extract_iso() {
   local iso dest
+  [[ -n "${TMP_DIR:-}" ]] || die "TMP_DIR is not set. Guest Additions are extracted under the lab temp directory."
   iso="$(ga_iso_path)" || die "VirtualBox Guest Additions ISO not found."
   dest="${TMP_DIR}/cache/vbox-ga-iso"
   GA_ISO_DIR="$dest"
   if [[ -f "${dest}/VBoxWindowsAdditions-amd64.exe" && -f "${dest}/cert/VBoxCertUtil.exe" ]]; then
+    log "Guest Additions already extracted: $dest"
     return 0
   fi
   mkdir -p "$dest"
-  log "Extracting Guest Additions ISO"
+  log "Extracting Guest Additions from $iso"
   7z x -y "-o${dest}" "$iso" \
     'VBoxWindowsAdditions.exe' \
     'VBoxWindowsAdditions-amd64.exe' \
     'cert/*' >/dev/null
   [[ -f "${dest}/VBoxWindowsAdditions-amd64.exe" ]] || die "ISO extract did not produce the installer"
+  [[ -f "${dest}/cert/VBoxCertUtil.exe" ]] || die "ISO extract did not produce VBoxCertUtil.exe"
+  log "Guest Additions files: $dest"
 }
 
 ga_dev_size() {
@@ -225,6 +269,8 @@ ga_write_registry() {
   reg="$(mktemp /tmp/vbox-ga-reg.XXXXXX)"
   chmod 600 "$reg"
   {
+    # HKLM RunOnce runs when LabAdmin is logged on by the one-shot autologon
+    # below, then Windows deletes the value. The user hive is left alone.
     ga_hive_record 'Microsoft\Windows\CurrentVersion\RunOnce' \
       'VBoxGuestAdditions' sz \
       'powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Windows\Temp\vbox-ga\install-guest-additions.ps1'
@@ -326,13 +372,16 @@ ga_wait_vm() {
   log "Waiting up to ${max}s for Guest Additions to report from $name"
   while [[ "$elapsed" -lt "$max" ]]; do
     state="$(ga_vm_state "$name")"
-    info="$(ga_additions_info "$name")"
-    run="${info%% *}"
-    ver="${info#* }"
-    if [[ -n "$ver" && "$ver" != "None" && "${run:-0}" -ge 2 ]]; then
+    if ga_additions_ready "$name"; then
+      info="$(ga_additions_info "$name")"
+      run="${info%% *}"
+      ver="${info#* }"
       log "Guest Additions ${ver} are running on $name (run level ${run})"
+      ga_enable_features "$name"
       return 0
     fi
+    info="$(ga_additions_info "$name")"
+    run="${info%% *}"
     if [[ "$state" == "poweroff" || "$state" == "aborted" ]]; then
       off=$((off + 10))
       if [[ "$off" -ge 120 && "$elapsed" -gt 60 ]]; then

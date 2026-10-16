@@ -34,6 +34,14 @@ else
   printf '  [OK]   cleanup refuses with nothing selected\n'
 fi
 
+# Reset is the menu action. This check must not pass --yes.
+if "${SCRIPTS_DIR}/cleanup-lab.sh" --reset >/dev/null 2>&1; then
+  printf '  [FAIL] reset without --yes should fail\n'
+  failed=1
+else
+  printf '  [OK]   reset refuses without --yes\n'
+fi
+
 # Ensure we did not delete VMs during verify
 for name in HYD-DC1 HYD-CM1 HYD-GW1; do
   if hv_vm_exists "$name"; then
