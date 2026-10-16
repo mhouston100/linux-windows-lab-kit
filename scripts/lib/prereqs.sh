@@ -3,6 +3,8 @@
 
 # shellcheck source=common.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
+# shellcheck source=hypervisor.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/hypervisor.sh"
 
 detect_distro_family() {
   if [[ -f /etc/os-release ]]; then
@@ -30,7 +32,6 @@ hint_for() {
         unzip) echo "sudo pacman -S unzip" ;;
         p7zip|7z) echo "sudo pacman -S p7zip" ;;
         qemu-img) echo "sudo pacman -S qemu-img" ;;
-        virtualbox|VBoxManage) echo "sudo pacman -S virtualbox" ;;
         wine) echo "sudo pacman -S wine" ;;
         zpaq) echo "Native zpaq is often AUR-only; Wine + bundled zpaq.exe is supported: sudo pacman -S wine" ;;
         *) echo "Install package providing: $pkg" ;;
@@ -41,7 +42,6 @@ hint_for() {
         unzip) echo "sudo apt install unzip" ;;
         p7zip|7z) echo "sudo apt install p7zip-full" ;;
         qemu-img) echo "sudo apt install qemu-utils" ;;
-        virtualbox|VBoxManage) echo "sudo apt install virtualbox" ;;
         wine) echo "sudo apt install wine" ;;
         zpaq) echo "sudo apt install zpaq   # or use Wine + bundled zpaq.exe" ;;
         *) echo "Install package providing: $pkg" ;;
@@ -52,7 +52,6 @@ hint_for() {
         unzip) echo "sudo dnf install unzip" ;;
         p7zip|7z) echo "sudo dnf install p7zip p7zip-plugins" ;;
         qemu-img) echo "sudo dnf install qemu-img" ;;
-        virtualbox|VBoxManage) echo "Install VirtualBox from virtualbox.org or COPR" ;;
         wine) echo "sudo dnf install wine" ;;
         zpaq) echo "sudo dnf install zpaq   # or use Wine + bundled zpaq.exe" ;;
         *) echo "Install package providing: $pkg" ;;
@@ -91,7 +90,7 @@ check_prereqs() {
   log "Distro family: $family"
   log "Checking host prerequisites (no automatic installs)"
 
-  local -a required=(unzip 7z qemu-img VBoxManage)
+  local -a required=(unzip 7z qemu-img)
   local cmd path hint
   for cmd in "${required[@]}"; do
     if have_cmd "$cmd"; then
@@ -110,6 +109,11 @@ check_prereqs() {
       failed=1
     fi
   done
+
+  hv_load
+  if ! hv_check_prereqs; then
+    failed=1
+  fi
 
   # Phase 2: differencing VHDX flatten (optional for Phase 1)
   if have_cmd dotnet; then

@@ -1,9 +1,20 @@
 #!/usr/bin/env bash
-# Phase 1 extract pipeline: ZIP → ZPAQ → setup.exe resources → organize.
+# Unpack one lab kit without copying Microsoft files into the git repo.
+#
+#   zip       Unzip --kit into DEST/source/extract (zpaq archive, setup.exe, zpaq.exe)
+#   zpaq      Unpack that archive into DEST/tmp/zpaq. This is the long step.
+#   setup     Pull resources out of setup.exe with 7z. Do not launch it under Wine.
+#   organize  Symlink disks and VM folders into DEST/tmp/organized and write an inventory
+#
+# Wine is only used to run the bundled zpaq.exe when no native zpaq is installed.
+# Mono is not required for that. -to keeps the extract inside TMP_DIR; without it,
+# Wine has previously spilled files into the parent of the working directory.
 
 set -euo pipefail
 # shellcheck source=lib/config.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/config.sh"
+# shellcheck source=lib/cli.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/cli.sh"
 # shellcheck source=lib/prereqs.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/prereqs.sh"
 
@@ -12,23 +23,26 @@ FORCE=0
 PROMPT=1
 
 usage() {
-  cat <<'EOF'
-Usage: extract-lab.sh [--step STEP] [--force] [--no-prompt]
+  cat <<EOF
+Usage: extract-lab.sh [--kit ZIP] [--dest DIR] [--step STEP] [--force] [--no-prompt]
 
 Steps:
-  zip       Extract lab ZIP into SOURCE_DIR/extract
-  zpaq      Extract nested .zpaq into TMP_DIR/zpaq
-  setup     Unpack setup.exe resources into TMP_DIR/setup
-  organize  Classify disks/VM trees under TMP_DIR/organized
+  zip       Extract lab ZIP into DEST/source/extract
+  zpaq      Extract nested .zpaq into DEST/tmp/zpaq
+  setup     Unpack setup.exe resources into DEST/tmp/setup
+  organize  Classify disks/VM trees under DEST/tmp/organized
   all       Run zip → zpaq → setup → organize (default)
 
 Options:
   --force      Re-run even if a step marker exists
-  --no-prompt  Use config/env defaults only (no interactive path questions)
+  --no-prompt  Use config/env/flag paths only (no interactive questions)
 
-Paths default to /virtualmachines/{source,tmp} and VM_ROOT=/virtualmachines.
+$(lab_path_help)
 EOF
 }
+
+parse_lab_cli "$@"
+eval "$(lab_cli_restore_eval)"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -40,6 +54,11 @@ while [[ $# -gt 0 ]]; do
   esac
   shift
 done
+
+# --kit / --dest already chose the paths; don't ask again.
+if [[ -n "${LAB_CLI_KIT:-}${LAB_CLI_DEST:-}" ]]; then
+  PROMPT=0
+fi
 
 load_config "$PROMPT"
 check_prereqs 1
@@ -182,7 +201,7 @@ organize_tree() {
     echo "## Disks"
     find "$ORG_DISKS" \( -type l -o -type f \) 2>/dev/null | sort || true
     echo
-    echo "## VM trees (Hyper-V originals in tmp — not VirtualBox VMs yet)"
+    echo "## VM trees (Hyper-V originals in tmp — not lab VMs yet)"
     find "$ORG_VMS" -maxdepth 1 \( -type l -o -type d \) 2>/dev/null | sort || true
     echo
     echo "## Top-level ZPAQ entries"

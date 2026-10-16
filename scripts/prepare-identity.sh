@@ -80,19 +80,18 @@ else
   warn "Skipping unattend XML render (no LAB_ADMIN_PASSWORD)"
 fi
 
-# Stamp VirtualBox VM descriptions from topology (no secrets in extradata)
-if command -v VBoxManage >/dev/null 2>&1; then
-  topo="${ROOT_DIR}/config/topology.tsv"
-  while IFS=$'\t' read -r name role ostype memory_mb cpus disk nic1 nic2 notes || [[ -n "${name:-}" ]]; do
-    [[ -z "${name:-}" || "$name" =~ ^# ]] && continue
-    [[ "$name" == "name" ]] && continue
-    if VBoxManage showvminfo "$name" >/dev/null 2>&1; then
-      desc="${role} | domain=${LAB_DOMAIN} | admin=${LAB_DOMAIN}\\${LAB_ADMIN_USER} | net=${CORPNET_INTNET}"
-      VBoxManage modifyvm "$name" --description "$desc" >/dev/null
-      log "Updated description: $name"
-    fi
-  done <"$topo"
-fi
+# Stamp VM descriptions from topology (no secrets). The hypervisor module does the write.
+hv_load
+topo="${ROOT_DIR}/config/topology.tsv"
+while IFS=$'\t' read -r name role memory_mb cpus disk nic1 nic2 notes || [[ -n "${name:-}" ]]; do
+  [[ -z "${name:-}" || "$name" =~ ^# ]] && continue
+  [[ "$name" == "name" ]] && continue
+  if hv_vm_exists "$name"; then
+    desc="${role} | domain=${LAB_DOMAIN} | admin=${LAB_DOMAIN}\\${LAB_ADMIN_USER} | net=${CORPNET_INTNET}"
+    hv_set_description "$name" "$desc"
+    log "Updated description: $name"
+  fi
+done <"$topo"
 
 # Operator-facing summary (no password echo)
 cat >"${IDENTITY_DIR}/summary.env" <<EOF

@@ -3,12 +3,16 @@
 
 # shellcheck source=common.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
+# shellcheck source=hypervisor.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/hypervisor.sh"
 
-# Defaults for testing / CachyOS lab host
-DEFAULT_SOURCE_DIR=/virtualmachines/source
-DEFAULT_TMP_DIR=/virtualmachines/tmp
+# Sane defaults for this lab host. --dest replaces the root; source/ and tmp/
+# stay underneath it so a kit never lands in the git repo or on a full /home.
 DEFAULT_VM_ROOT=/virtualmachines
+DEFAULT_SOURCE_DIR="${DEFAULT_VM_ROOT}/source"
+DEFAULT_TMP_DIR="${DEFAULT_VM_ROOT}/tmp"
 DEFAULT_LAB_ZIP_NAME=Win11_25H2_Lab.zip
+DEFAULT_LAB_ZIP=/virtualmachines/Kit/Original/Win11_25H2_Lab.zip
 
 prompt_path() {
   # prompt_path VAR "Prompt text" DEFAULT
@@ -51,7 +55,7 @@ apply_derived_paths() {
   MARKERS_DIR="${TMP_DIR}/.markers"
   INVENTORY_FILE="${ORG_META}/inventory.txt"
 
-  # vm root: VirtualBox machine folder (definitions + final disks)
+  # vm root: machine folder for the selected hypervisor (definitions + final disks)
   # Phase 3 will create VMs here; keep source/ and tmp/ as siblings.
   export SOURCE_DIR TMP_DIR VM_ROOT LAB_ZIP_PATH GUIDES_ZIP_PATH \
     HYPERVISOR LAB_PREFIX LAB_NETWORK_NAME LAB_ADMIN_USER LAB_ADMIN_PASSWORD LAB_DOMAIN \
@@ -73,12 +77,12 @@ resolve_paths() {
     log "Storage paths (Enter accepts default). Repo stays clean — media lives under /virtualmachines."
     prompt_path SOURCE_DIR "Source directory (ZIP + immediate extract)" "$DEFAULT_SOURCE_DIR"
     prompt_path TMP_DIR "Temp directory (zpaq disks, setup unpack, scratch)" "$DEFAULT_TMP_DIR"
-    prompt_path VM_ROOT "VM root (VirtualBox machines + final disks)" "$DEFAULT_VM_ROOT"
+    prompt_path VM_ROOT "VM root (machine folder + final disks)" "$DEFAULT_VM_ROOT"
 
     local zip_default="${LAB_ZIP_PATH:-${SOURCE_DIR}/${DEFAULT_LAB_ZIP_NAME}}"
     # Prefer known original location if present and default missing
-    if [[ ! -f "$zip_default" && -f /virtualmachines/Kit/Original/Win11_25H2_Lab.zip ]]; then
-      zip_default=/virtualmachines/Kit/Original/Win11_25H2_Lab.zip
+    if [[ ! -f "$zip_default" && -f "$DEFAULT_LAB_ZIP" ]]; then
+      zip_default="$DEFAULT_LAB_ZIP"
     fi
     LAB_ZIP_PATH="${LAB_ZIP_PATH:-$zip_default}"
     prompt_path LAB_ZIP_PATH "Path to lab ZIP" "$LAB_ZIP_PATH"
@@ -86,12 +90,22 @@ resolve_paths() {
     if [[ -z "${LAB_ZIP_PATH}" ]]; then
       if [[ -f "${SOURCE_DIR}/${DEFAULT_LAB_ZIP_NAME}" ]]; then
         LAB_ZIP_PATH="${SOURCE_DIR}/${DEFAULT_LAB_ZIP_NAME}"
-      elif [[ -f /virtualmachines/Kit/Original/Win11_25H2_Lab.zip ]]; then
-        LAB_ZIP_PATH=/virtualmachines/Kit/Original/Win11_25H2_Lab.zip
+      elif [[ -f "$DEFAULT_LAB_ZIP" ]]; then
+        LAB_ZIP_PATH="$DEFAULT_LAB_ZIP"
       else
         LAB_ZIP_PATH="${SOURCE_DIR}/${DEFAULT_LAB_ZIP_NAME}"
       fi
     fi
+  fi
+
+  # Command-line --kit / --dest win over lab.env and over the defaults above.
+  if [[ -n "${LAB_CLI_DEST:-}" ]]; then
+    VM_ROOT="$LAB_CLI_DEST"
+    SOURCE_DIR="${LAB_CLI_DEST}/source"
+    TMP_DIR="${LAB_CLI_DEST}/tmp"
+  fi
+  if [[ -n "${LAB_CLI_KIT:-}" ]]; then
+    LAB_ZIP_PATH="$LAB_CLI_KIT"
   fi
 
   : "${HYPERVISOR:=virtualbox}"

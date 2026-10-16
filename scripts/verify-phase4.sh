@@ -6,6 +6,7 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/config.sh"
 
 load_config 0
+hv_load
 
 failed=0
 check() {
@@ -28,9 +29,9 @@ else
   printf '  [INFO] LAB_ADMIN_PASSWORD unset — unattend XML not required for checkpoint\n'
 fi
 
-# Server VMs should carry description
+# Server VMs should carry a description set by the hypervisor backend
 for name in HYD-DC1 HYD-CM1 HYD-GW1; do
-  if VBoxManage showvminfo "$name" --machinereadable 2>/dev/null | rg -q '^description=".+"'; then
+  if hv_description_ok "$name"; then
     printf '  [OK]   description set: %s\n' "$name"
   else
     printf '  [FAIL] description missing: %s\n' "$name"

@@ -13,7 +13,8 @@ while [[ $# -gt 0 ]]; do
       cat <<'EOF'
 Usage: check-prereqs.sh [--report-only]
 
-Checks for unzip, 7z, qemu-img, VBoxManage, and zpaq (native or Wine).
+Checks for unzip, 7z, qemu-img, zpaq (native or Wine), and the tools for the
+hypervisor named by HYPERVISOR (default virtualbox).
 Does not install anything; prints distro-specific hints when tools are missing.
 EOF
       exit 0

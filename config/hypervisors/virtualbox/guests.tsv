@@ -1,0 +1,10 @@
+# VirtualBox guest OS ids. Shared lab shape stays in config/topology.tsv.
+# name	ostype
+name	ostype
+HYD-DC1	Windows2025_64
+HYD-CM1	Windows2025_64
+HYD-GW1	Windows2025_64
+HYD-CLIENT1	Windows11_64
+HYD-CLIENT2	Windows11_64
+HYD-CLIENT3	Windows11_64
+HYD-CLIENT4	Windows11_64

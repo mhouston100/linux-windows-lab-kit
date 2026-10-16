@@ -6,6 +6,7 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/config.sh"
 
 load_config 0
+hv_load
 
 failed=0
 check() {
@@ -35,7 +36,7 @@ fi
 
 # Ensure we did not delete VMs during verify
 for name in HYD-DC1 HYD-CM1 HYD-GW1; do
-  if VBoxManage showvminfo "$name" >/dev/null 2>&1; then
+  if hv_vm_exists "$name"; then
     printf '  [OK]   VM still present after dry checks: %s\n' "$name"
   else
     printf '  [FAIL] VM missing (should not have deleted): %s\n' "$name"

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Phase 2: flatten differencing VHDX (DiscUtils) + convert to VirtualBox VDI (qemu-img).
+# Phase 2: flatten differencing VHDX (DiscUtils) + convert to the hypervisor disk format.
 
 set -euo pipefail
 # shellcheck source=lib/config.sh
@@ -9,7 +9,8 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/prereqs.sh"
 
 PROMPT=0
 FORCE=0
-FORMAT=vdi
+FORMAT=""
+FORMAT_EXPLICIT=0
 
 usage() {
   cat <<'EOF'
@@ -17,13 +18,13 @@ Usage: convert-disks.sh [--no-prompt] [--force] [--format vdi|vmdk]
 
 Pipeline:
   1) Inventory disks (if needed)
-  2) For base VHDX (qemu-readable): qemu-img convert -> CONVERT_DIR/<name>.vdi
-  3) For differencing VHDX: VhdxFlatten -> flat VHDX, then qemu-img -> VDI
+  2) For base VHDX (qemu-readable): qemu-img convert -> CONVERT_DIR/<name>.<format>
+  3) For differencing VHDX: VhdxFlatten -> flat VHDX, then qemu-img
   4) Write CONVERT_DIR/conversion-map.tsv
 
-Notes:
-  qemu-img cannot open Hyper-V differencing VHDX (ENOTSUP). We flatten with
-  tools/VhdxFlatten (DiscUtils / .NET) first.
+The disk format defaults to the selected hypervisor (vdi for VirtualBox).
+--format overrides that. qemu-img cannot open Hyper-V differencing VHDX
+(ENOTSUP). Those are flattened with tools/VhdxFlatten (DiscUtils / .NET) first.
 EOF
 }
 
@@ -32,19 +33,25 @@ while [[ $# -gt 0 ]]; do
     --prompt) PROMPT=1 ;;
     --no-prompt) PROMPT=0 ;;
     --force) FORCE=1 ;;
-    --format) FORMAT="${2:?}"; shift ;;
+    --format) FORMAT="${2:?}"; FORMAT_EXPLICIT=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "Unknown option: $1" ;;
   esac
   shift
 done
 
-case "$FORMAT" in
-  vdi|vmdk) ;;
-  *) die "Unsupported format: $FORMAT (use vdi or vmdk)" ;;
-esac
+if [[ "$FORMAT_EXPLICIT" -eq 1 ]]; then
+  case "$FORMAT" in
+    vdi|vmdk) ;;
+    *) die "Unsupported format: $FORMAT (use vdi or vmdk)" ;;
+  esac
+fi
 
 load_config "$PROMPT"
+hv_load
+if [[ -z "$FORMAT" ]]; then
+  FORMAT="$(hv_disk_format)"
+fi
 check_prereqs 1
 have_cmd dotnet || die "dotnet is required for VhdxFlatten (differencing VHDX). Hint: sudo pacman -S dotnet-sdk"
 
@@ -131,8 +138,7 @@ convert_one() {
     printf '%s\t%s\t%s\t%s\n' "$src" "$flat" "$out" "flatten+qemu-img" >>"$CONV_MAP"
   fi
 
-  # Verify VirtualBox can see the medium
-  VBoxManage showmediuminfo "$out" >/dev/null
+  hv_verify_disk "$out"
   log "OK: $out"
 }
 

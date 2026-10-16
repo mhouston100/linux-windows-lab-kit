@@ -6,6 +6,7 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/config.sh"
 
 load_config 0
+hv_load
 
 failed=0
 check() {
@@ -40,7 +41,7 @@ fi
 while IFS=$'\t' read -r name order wait notes || [[ -n "${name:-}" ]]; do
   [[ -z "${name:-}" || "$name" =~ ^# ]] && continue
   [[ "$name" == "name" ]] && continue
-  state="$(VBoxManage showvminfo "$name" --machinereadable 2>/dev/null | awk -F= '/^VMState=/{gsub(/"/,"",$2); print $2}')"
+  state="$(hv_vm_state "$name")"
   if [[ "$state" == "poweroff" || "$state" == "aborted" ]]; then
     printf '  [OK]   %s off (%s)\n' "$name" "$state"
   else

@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Phase 2 checkpoint: converted disks exist and open in VirtualBox.
+# Phase 2 checkpoint: converted disks exist and the hypervisor can open them.
 
 set -euo pipefail
 # shellcheck source=lib/config.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/config.sh"
 
 load_config 0
+hv_load
 
 failed=0
 check() {
@@ -24,7 +25,7 @@ while IFS=$'\t' read -r src mid out method; do
   [[ "$src" == "source" ]] && continue
   [[ "$out" == "-" || -z "$out" ]] && continue
   count=$((count + 1))
-  if [[ -f "$out" ]] && VBoxManage showmediuminfo "$out" >/dev/null 2>&1; then
+  if [[ -f "$out" ]] && hv_verify_disk "$out" >/dev/null 2>&1; then
     printf '  [OK]   %s (%s)\n' "$(basename "$out")" "$method"
   else
     printf '  [FAIL] %s\n' "$out"
@@ -38,7 +39,6 @@ if (( count < 1 )); then
   failed=1
 fi
 
-# Expect at least the three lab VMs + preferably parents
 for name in HYD-DC1 HYD-CM1 HYD-GW1; do
   if compgen -G "${CONVERT_DIR}/${name}.*" >/dev/null; then
     printf '  [OK]   lab disk present: %s\n' "$name"

@@ -19,7 +19,7 @@ Usage: cleanup-lab.sh [options]
 
 Destructive options require --yes (and interactive confirm unless LAB_NONINTERACTIVE=1).
 
-  --vms           Unregister/delete VirtualBox VMs created by this lab (HYD-*)
+  --vms           Unregister/delete VMs created by this lab (HYD-*)
   --convert       Delete TMP_DIR/convert (VDI outputs; breaks VM hardlinks if still used)
   --tmp           Delete TMP_DIR/{zpaq,setup,organized,convert,identity,.markers}
   --identity      Delete TMP_DIR/identity only
@@ -69,18 +69,11 @@ confirm() {
 
 if [[ "$DELETE_VMS" -eq 1 ]]; then
   confirm "unregister and delete lab VMs under $VM_ROOT"
+  hv_load
   while IFS=$'\t' read -r name rest || [[ -n "${name:-}" ]]; do
     [[ -z "${name:-}" || "$name" =~ ^# ]] && continue
     [[ "$name" == "name" ]] && continue
-    if VBoxManage showvminfo "$name" >/dev/null 2>&1; then
-      state="$(VBoxManage showvminfo "$name" --machinereadable | awk -F= '/^VMState=/{gsub(/"/,"",$2); print $2}')"
-      if [[ "$state" != "poweroff" && "$state" != "aborted" ]]; then
-        VBoxManage controlvm "$name" poweroff || true
-        sleep 2
-      fi
-      log "Deleting VM $name"
-      VBoxManage unregistervm "$name" --delete
-    fi
+    hv_delete_vm "$name"
   done <"${ROOT_DIR}/config/topology.tsv"
 fi
 
