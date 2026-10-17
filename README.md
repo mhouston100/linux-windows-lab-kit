@@ -1,12 +1,22 @@
 # Linux Windows Lab Kit
 
+Bash scripts that build a Windows lab on a Linux host from a Microsoft lab ZIP you already have. You supply the archive and the licenses. The repository holds the orchestration only.
+
+- **Three servers.** A domain controller, a Configuration Manager server, and a gateway. They share an internal network. The gateway also has NAT, so the lab can reach the Internet.
+- **Six stages.** Extract the archive, convert the Hyper-V disks, create the virtual machines, write the lab account notes, start the machines in order, then check that cleanup will not delete the lab by accident.
+- **One screen.** `./scripts/lab.sh` shows the stages, the key prompt, and the live log. Press `1`–`6` for one stage, `a` to run whatever is left, `c` to reset, or `q` to leave.
+- **It picks up where it stopped.** A finished step is skipped until you reset or pass `--force`. Reset removes this lab only. The ZIP and any other virtual machines on the host stay.
+- **VirtualBox today.** Guest Additions are planted before the servers boot, and the domain controller starts before the other two. Another hypervisor can be added later as its own backend.
+
+## Operator guide
+
 This repository builds a Windows lab on a Linux host from a Microsoft lab archive you already have. You point the scripts at that ZIP. They extract it, turn the Hyper-V disks into disks the hypervisor can boot, create the server virtual machines, and start them in a safe order.
 
 The project is independent. It is not affiliated with, endorsed by, or redistributed by Microsoft. You supply the lab ZIP and any licenses the software inside it requires. This repository contains orchestration, templates, and two small .NET tools. It does not contain Windows media, product keys, or passwords.
 
 The hypervisor in use today is VirtualBox. `HYPERVISOR` in `config/lab.env` selects the backend. Shared stages live in `scripts/`. Anything that talks to VirtualBox lives in `scripts/hypervisors/virtualbox/` and `config/hypervisors/virtualbox/`. A later backend (VMware Workstation, libvirt, Proxmox, or another) is a new directory beside that one, with the same hooks. Those backends are not written yet.
 
-`docs/SPEC.md` is the short design note. This file is the operator guide.
+`docs/SPEC.md` is the short design note. The sections below are the operator guide.
 
 ## What the lab is
 
@@ -125,8 +135,10 @@ The kit's disks are Hyper-V VHDX, and several of them are differencing disks who
 
 1. `scripts/inventory-disks.sh` records each disk and its parent.
 2. `tools/VhdxFlatten` walks a differencing chain and writes a flat VHDX. A message that the first open could not find a parent is the tool switching to an explicit parent path. Small checkpoint AVHDX files are skipped on purpose.
-3. `qemu-img` converts the flat image to the backend's disk format. VirtualBox uses VDI. `--format vdi|vmdk` overrides that.
+3. `qemu-img` converts the flat image to the backend's disk format. VirtualBox uses VDI. `--format vdi|vmdk` overrides that. Each disk logs its start and how many seconds it took.
 4. The backend checks that it can open the result. For VirtualBox that check is `VBoxManage showmediuminfo`.
+
+`VhdxFlatten` is built only when its Release binary is missing or older than the tool's sources.
 
 Converted files land in `tmp/convert`, including `HYD-DC1.vdi`, `HYD-CM1.vdi`, and `HYD-GW1.vdi`. Those files stay there. The VM disks in stage 3 are copies.
 
@@ -138,9 +150,9 @@ On VirtualBox each VM is registered under `VM_ROOT`, given the memory and CPU co
 
 If the VM already exists and its disk is attached, creation is skipped. `--force` unregisters it and creates it again. If the VM exists without that disk, the disk is attached and creation is not repeated.
 
-Before the smoke boot, the VirtualBox backend mounts the new disk and plants Guest Additions. Mounting uses `qemu-nbd`. A full run asks for the sudo password once at the start, before extract and convert, and a stage 3 or stage 5 run on its own asks at the start of that stage. The password is not stored. A root helper then accepts only the disk-mount commands, and the sudo ticket is left to expire on its own. Reading the Guest Additions ISO and writing the offline registry do not need sudo.
+Stage 3 on its own boots HYD-GW1 headless after the VMs exist. Before that boot, the VirtualBox backend mounts the new disk and plants Guest Additions. A full run (`a` or `all`) skips that boot. Stage 5 plants the additions on each powered-off server and starts the lab, so the gateway is not booted twice. Mounting uses `qemu-nbd`. A full run asks for the sudo password once at the start, before extract and convert, and a stage 3 or stage 5 run on its own asks at the start of that stage. The password is not stored. A root helper then accepts only the disk-mount commands, and the sudo ticket is left to expire on its own. Reading the Guest Additions ISO and writing the offline registry do not need sudo.
 
-The plant is a copy of the installer and `install-guest-additions.ps1` under `C:\Windows\Temp\vbox-ga` on the guest, plus a one-time autologon of `LabAdmin` and a RunOnce entry that runs the installer. The installer adds the VirtualBox publisher certificate, runs `VBoxWindowsAdditions-amd64.exe` silently, clears the stored password, and reboots. The stage then waits until VirtualBox reports the additions service (up to 30 minutes by default). A reboot during that wait is expected. When the service reports in, the script turns on auto-resize of the guest display, the shared clipboard, and drag-and-drop. The smoke VM is HYD-GW1. It is powered off after the additions service reports in.
+The plant is a copy of the installer and `install-guest-additions.ps1` under `C:\Windows\Temp\vbox-ga` on the guest, plus a one-time autologon of `LabAdmin` and a RunOnce entry that runs the installer. The installer adds the VirtualBox publisher certificate, runs `VBoxWindowsAdditions-amd64.exe` silently, clears the stored password, and reboots. The script then waits until VirtualBox reports the additions service (up to 30 minutes by default). A reboot during that wait is expected. When the service reports in, the script turns on auto-resize of the guest display, the shared clipboard, and drag-and-drop. When stage 3 does boot a VM, that VM is HYD-GW1, and it is powered off after the additions service reports in.
 
 The registry writer is `tools/HiveSet`. It uses the MIT-licensed DiscUtils packages stored in `third_party/nuget`, so that build does not download them. The .NET SDK may still contact NuGet for its own targeting packs.
 
@@ -169,7 +181,7 @@ The client unattend XML is not applied to a disk yet. Server disks receive the G
 ./scripts/lab-ctl.sh health
 ```
 
-`start` plants Guest Additions again on any server that is powered off, boots it, and waits until the additions service reports in before the next machine. Stop walks the boot order in reverse. `health` checks that each lab VM is registered, has its disk, and is on CorpNet.
+`start` plants Guest Additions on any server that is powered off, then boots it. The settle time in `boot-order.tsv` (90s for the domain controller, then 60s, then 30s) starts when that VM starts, and it runs while the additions service is reporting in. The next VM starts once the additions are up and that settle time has passed. `--no-wait` skips the settle time. Stop walks the boot order in reverse. `health` checks that each lab VM is registered, has its disk, and is on CorpNet.
 
 Phase 5 runs health, a start with `--no-wait`, and a stop, then checks that the three servers are powered off.
 

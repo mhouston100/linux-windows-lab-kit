@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Fixed terminal screen for lab.sh. Gum draws the stage list and the log tail.
-# script(1) still gives a running stage a terminal so its progress can be read
-# without painting over this layout.
+# script(1) still gives a running stage a terminal. Its output is a file, so a
+# slow redraw cannot fill a pipe and stall the stage.
 #
 # Three bordered sections, stacked: the stage list, the key prompt, then the
 # log tail. Gum has no progress widget, so each bar is a filled block and an
@@ -30,6 +30,8 @@ LAB_STAGES=(
 TUI_LOG=()
 TUI_RUNNING=""
 TUI_LIVE_PCT=""
+TUI_DRAW_SIG=""
+TUI_SKIP_SMOKE=0
 TUI_BUF=""
 TUI_CHILD=""
 TUI_CANCEL=0
@@ -306,17 +308,22 @@ tui_classify() {
 }
 
 tui_ingest_line() {
-  local line="$1" level n
+  local line="$1" level
   line="$(printf '%s' "$line" | sed $'s/\033\\[[0-9;]*[[:alpha:]]//g')"
   line="${line//$'\r'/}"
   [[ -z "$line" ]] && return 0
   level="$(tui_classify "$line")"
   tui_log "$level" "$line"
-  if [[ "$line" =~ ([0-9]{1,3})% ]]; then
-    n="${BASH_REMATCH[1]}"
-    [[ "$n" -gt 100 ]] && n=100
-    TUI_LIVE_PCT="$n"
-  fi
+  tui_note_progress "$line"
+}
+
+# "59.10%" is fifty-nine percent. A bare digit match would keep the "10".
+tui_note_progress() {
+  local line="$1" n
+  [[ "$line" =~ ([0-9]{1,3})(\.[0-9]+)?% ]] || return 0
+  n="${BASH_REMATCH[1]}"
+  [[ "$n" -gt 100 ]] && n=100
+  TUI_LIVE_PCT="$n"
 }
 
 # Split the read buffer on CR/LF. Progress tools often update with CR only.
@@ -346,9 +353,14 @@ tui_prompt_line() {
 }
 
 tui_draw() {
-  local cols rows box_w inner title_w bar_w id dir
-  local content start idx note level text color line count n
+  local cols rows box_w inner title_w bar_w need id dir
+  local content start idx note level text color count n errexit=0
   local -a log_text=() log_color=() pids=()
+  case $- in
+    *e*) errexit=1 ;;
+  esac
+  # A Gum failure must not exit the menu. lab.sh runs with set -e.
+  set +e
   cols="$(tput cols 2>/dev/null || echo 80)"
   rows="$(tput lines 2>/dev/null || echo 24)"
   [[ "$cols" -lt 40 ]] && cols=40
@@ -358,7 +370,7 @@ tui_draw() {
   [[ "$inner" -lt 24 ]] && inner=24
   title_w=22
   bar_w=16
-  local need=$((5 + title_w + 4 + bar_w + 13))
+  need=$((5 + title_w + 4 + bar_w + 13))
   while [[ "$need" -gt "$inner" && "$bar_w" -gt 8 ]]; do
     bar_w=$((bar_w - 2))
     need=$((5 + title_w + 4 + bar_w + 13))
@@ -408,9 +420,9 @@ tui_draw() {
     tui_gum_text --foreground "${log_color[$n]}" -- "${log_text[$n]}" >"$dir/4log$(printf '%02d' "$n")" &
     pids+=("$!")
   done
-  # Wait only for these draws. A bare wait also reaps the stage script, and
-  # the capture loop then reports exit 127 for a run that already finished.
-  wait "${pids[@]}" || true
+  # Wait only for these Gum jobs. Never for the stage: its output is a file,
+  # and reaping it here makes the menu report exit 127 after a success.
+  tui_wait_jobs "${pids[@]}"
 
   {
     cat "$dir/00title"
@@ -437,7 +449,9 @@ tui_draw() {
   TUI_LIST_LINES="${TUI_LIST_LINES//[[:space:]]/}"
   cat "$dir/boxlog"
   printf '\033[J'
-  rm -rf "$dir"
+  [[ -n "$dir" && -d "$dir" ]] && rm -rf "$dir"
+  [[ "$errexit" -eq 1 ]] && set -e
+  return 0
 }
 
 # Ctrl+C is a byte while ISIG is off. bash read turns ISIG back on, so this
@@ -451,68 +465,223 @@ tui_poll_cancel() {
   fi
 }
 
-tui_stop_capture() {
-  local pid="$1" sig="${2:-TERM}" kids grand="" k
-  [[ -z "$pid" ]] && return 0
-  kids="$(ps -o pid= --ppid "$pid" 2>/dev/null || true)"
-  for k in $kids; do
-    grand+=" $(ps -o pid= --ppid "$k" 2>/dev/null || true)"
+tui_sid() {
+  ps -o sid= -p "$1" 2>/dev/null | tr -d '[:space:]'
+}
+
+# script keeps its own session. The stage shell is the child session on the pty.
+tui_stage_sids() {
+  local script_pid="$1" child script_sid child_sid
+  script_sid="$(tui_sid "$script_pid")"
+  [[ -n "$script_sid" ]] && printf '%s\n' "$script_sid"
+  child="$(ps -o pid= --ppid "$script_pid" 2>/dev/null | awk 'NR==1 { print $1 }')"
+  child_sid="$(tui_sid "$child")"
+  if [[ -n "$child_sid" && "$child_sid" != "$script_sid" ]]; then
+    printf '%s\n' "$child_sid"
+  fi
+}
+
+# One signal to every process still in the stage session. Never the menu's session.
+tui_stop_session() {
+  local sid="$1" sig="$2" mine pid
+  local -a pids=()
+  mine="$(tui_sid "$$")"
+  [[ -n "$sid" && "$sid" != "$mine" ]] || return 0
+  while read -r pid; do
+    [[ -n "$pid" && "$pid" != "$$" ]] && pids+=("$pid")
+  done < <(ps -o pid= -s "$sid" 2>/dev/null || true)
+  [[ "${#pids[@]}" -eq 0 ]] && return 0
+  kill -"$sig" "${pids[@]}" 2>/dev/null || true
+}
+
+# A process that called setsid itself is no longer in the stage session.
+# Walk only those, children first.
+tui_stop_outsiders() {
+  local pid="$1" sig="$2" stage_sid="$3" child sid
+  local -a kids=()
+  [[ -n "$pid" ]] || return 0
+  while read -r child; do
+    [[ -n "$child" ]] && kids+=("$child")
+  done < <(ps -o pid= --ppid "$pid" 2>/dev/null || true)
+  for child in "${kids[@]}"; do
+    tui_stop_outsiders "$child" "$sig" "$stage_sid"
   done
-  # shellcheck disable=SC2086
-  kill -"$sig" $grand $kids "$pid" 2>/dev/null || true
+  sid="$(tui_sid "$pid")"
+  [[ -n "$sid" && "$sid" != "$stage_sid" && "$sid" != "$(tui_sid "$$")" ]] || return 0
+  kill -"$sig" "$pid" 2>/dev/null || true
+}
+
+# Children first, then the parent. Used when the stage has no session of its own.
+tui_stop_tree() {
+  local pid="$1" sig="$2" child
+  local -a kids=()
+  [[ -n "$pid" ]] || return 0
+  while read -r child; do
+    [[ -n "$child" ]] && kids+=("$child")
+  done < <(ps -o pid= --ppid "$pid" 2>/dev/null || true)
+  for child in "${kids[@]}"; do
+    tui_stop_tree "$child" "$sig"
+  done
+  kill -"$sig" "$pid" 2>/dev/null || true
+}
+
+tui_stop_capture() {
+  local pid="$1" sig="${2:-TERM}" sid stage_sid=""
+  local -a sids=()
+  while read -r sid; do
+    [[ -n "$sid" ]] || continue
+    sids+=("$sid")
+    stage_sid="$sid"
+  done < <(tui_stage_sids "$pid")
+  # No private session: the stage is still in the menu's session. Signal the tree.
+  if [[ -z "$stage_sid" || "$stage_sid" == "$(tui_sid "$$")" ]]; then
+    tui_stop_tree "$pid" "$sig"
+    return 0
+  fi
+  # Leave-takers first, while their parent link still exists. Then the session.
+  tui_stop_outsiders "$pid" "$sig" "$stage_sid"
+  for sid in "${sids[@]}"; do
+    tui_stop_session "$sid" "$sig"
+  done
+}
+
+# Poll Ctrl+C between short sleeps. The stage ignores SIGINT, so the key is a byte.
+tui_pause() {
+  local ticks="$1" i
+  for ((i = 0; i < ticks; i++)); do
+    tui_poll_cancel
+    [[ "${TUI_CANCEL:-0}" -eq 1 ]] && return 0
+    sleep 0.05
+  done
+}
+
+# Reap Gum jobs only. A bare wait also reaps the stage and the mount helper.
+# Ctrl+C is checked while those jobs run, and the jobs are stopped so the
+# wait cannot sit there after the operator has interrupted.
+tui_wait_jobs() {
+  local p alive
+  local -a keep=()
+  for p in "$@"; do
+    [[ -n "$p" && "$p" != "${TUI_CHILD:-}" ]] || continue
+    keep+=("$p")
+  done
+  [[ "${#keep[@]}" -eq 0 ]] && return 0
+  while true; do
+    tui_poll_cancel
+    if [[ "${TUI_CANCEL:-0}" -eq 1 ]]; then
+      kill "${keep[@]}" 2>/dev/null || true
+      wait "${keep[@]}" 2>/dev/null || true
+      return 0
+    fi
+    alive=0
+    for p in "${keep[@]}"; do
+      if kill -0 "$p" 2>/dev/null; then
+        alive=1
+        break
+      fi
+    done
+    [[ "$alive" -eq 0 ]] && break
+    sleep 0.05
+  done
+  wait "${keep[@]}" 2>/dev/null || true
+}
+
+# What the screen is showing. A redraw is skipped while this stays the same.
+tui_draw_sig() {
+  local n start i marker markers
+  n="${#TUI_LOG[@]}"
+  start=0
+  if [[ "$n" -gt 12 ]]; then
+    start=$((n - 12))
+  fi
+  printf '%s\n%s\n' "$TUI_LIVE_PCT" "$n"
+  for ((i = start; i < n; i++)); do
+    printf '%s\n' "${TUI_LOG[$i]}"
+  done
+  if [[ -n "$TUI_RUNNING" && "$TUI_RUNNING" != "reset" ]]; then
+    markers="$(tui_stage_markers "$TUI_RUNNING" 2>/dev/null || true)"
+    for marker in $markers; do
+      if tui_marker_present "$marker"; then
+        printf 'm:%s\n' "$marker"
+      fi
+    done
+  fi
+}
+
+# Read what the stage has already written. Returns immediately at end of file,
+# so the stage never waits for the screen.
+tui_drain_capture() {
+  local piece="" n=0
+  while [[ "$n" -lt 64 ]]; do
+    piece=""
+    IFS= read -r -N 8192 -u 7 piece || true
+    [[ -z "$piece" ]] && return 0
+    TUI_BUF+="$piece"
+    tui_pump_buf
+    n=$((n + 1))
+  done
 }
 
 # Run a command under a private pty and fold its output into the log pane.
-# Returns the command's exit code.
+# Returns the command's exit code. The command's output is a file. The screen
+# reads that file on its own schedule.
 tui_capture() {
   local cmd="$1"
-  local fifo ts spid piece rc=0 prev_int i
-  fifo="$(mktemp -u /tmp/lab-tui.XXXXXX)"
+  local out ts spid piece rc=0 prev_int i now next_draw=0 sig
+  out="$(mktemp /tmp/lab-tui-out.XXXXXX)"
   ts="$(mktemp /tmp/lab-tui-ts.XXXXXX)"
-  mkfifo "$fifo"
   TUI_BUF=""
   TUI_CANCEL=0
   TUI_LIVE_PCT=""
+  TUI_DRAW_SIG=""
   prev_int="$(trap -p INT || true)"
   set +e
-  # Read-write open does not block. A plain read open would wait for the
-  # writer, and Ctrl+C in that window would leave the screen.
-  exec 7<>"$fifo"
   # Ignore SIGINT for the duration. Ctrl+C is read as a byte below.
   # A trap that kills the stage hits a bash longjmp bug and drops the menu.
   trap '' INT
   if [[ -t 0 ]]; then
     stty -isig -icanon -echo min 1 time 0 2>/dev/null || true
   fi
-  script -q -e -f -c "$cmd" "$ts" >"$fifo" 2>>"$ts" &
+  # stdout is the session text. The typescript file is only script's own record.
+  # stdin is not the user's terminal; the menu reads that itself.
+  # setsid gives script a session that is not the menu's, so Ctrl+C can signal
+  # that session instead of walking every child.
+  if command -v setsid >/dev/null 2>&1; then
+    setsid script -q -e -f -c "$cmd" "$ts" >"$out" 2>"${out}.err" </dev/null &
+  else
+    script -q -e -f -c "$cmd" "$ts" >"$out" 2>"${out}.err" </dev/null &
+  fi
   spid=$!
   TUI_CHILD="$spid"
+  tui_pause 1
+  exec 7<"$out"
   while kill -0 "$spid" 2>/dev/null; do
     tui_poll_cancel
     if [[ "$TUI_CANCEL" -eq 1 ]]; then
       tui_stop_capture "$spid" TERM
       break
     fi
-    piece=""
-    IFS= read -r -t 0.2 -N 512 -u 7 piece || true
-    tui_poll_cancel
-    if [[ -n "$piece" ]]; then
-      TUI_BUF+="$piece"
-      tui_pump_buf
+    tui_drain_capture
+    if [[ -t 1 ]]; then
+      now="$(date +%s%N)"
+      if [[ "$now" -ge "$next_draw" ]]; then
+        # At most once a second, and only when the percent, log tail, or
+        # stage markers changed. Gum is not free, and the stage does not
+        # wait on this.
+        sig="$(tui_draw_sig)"
+        if [[ "$sig" != "$TUI_DRAW_SIG" ]]; then
+          tui_draw
+          TUI_DRAW_SIG="$sig"
+        fi
+        next_draw="$((now + 1000000000))"
+      fi
     fi
-    [[ -t 1 ]] && tui_draw
+    if [[ "$TUI_CANCEL" -eq 1 ]]; then
+      tui_stop_capture "$spid" TERM
+      break
+    fi
+    tui_pause 2
   done
-  while true; do
-    piece=""
-    IFS= read -r -t 0.05 -N 512 -u 7 piece || true
-    [[ -z "$piece" ]] && break
-    TUI_BUF+="$piece"
-    tui_pump_buf
-  done
-  if [[ -n "$TUI_BUF" ]]; then
-    tui_ingest_line "$TUI_BUF"
-    TUI_BUF=""
-  fi
   if [[ "$TUI_CANCEL" -eq 1 ]]; then
     tui_stop_capture "$spid" TERM
     for i in 1 2 3 4 5; do
@@ -523,13 +692,29 @@ tui_capture() {
   fi
   wait "$spid"
   rc=$?
+  while true; do
+    piece=""
+    IFS= read -r -N 8192 -u 7 piece || true
+    [[ -z "$piece" ]] && break
+    TUI_BUF+="$piece"
+    tui_pump_buf
+  done
+  if [[ -n "$TUI_BUF" ]]; then
+    tui_ingest_line "$TUI_BUF"
+    TUI_BUF=""
+  fi
+  if [[ -s "${out}.err" ]]; then
+    while IFS= read -r piece; do
+      [[ -n "$piece" ]] && tui_log error "$piece"
+    done <"${out}.err"
+  fi
   if [[ -n "$prev_int" ]]; then
     eval "$prev_int"
   else
     trap - INT
   fi
   exec 7<&-
-  rm -f "$fifo" "$ts"
+  rm -f "$out" "${out}.err" "$ts"
   TUI_CHILD=""
   if [[ -n "$TUI_STTY" && -t 0 ]]; then
     stty "$TUI_STTY" 2>/dev/null || true
@@ -545,6 +730,7 @@ tui_capture() {
 tui_run_stage() {
   local id="$1"
   local reason script title rc cmd
+  local -a extra=()
   title="$(tui_stage_part "$id" title)" || return 1
   reason="$(tui_block_reason "$id")"
   if [[ -n "$reason" ]]; then
@@ -557,14 +743,20 @@ tui_run_stage() {
     return 1
   fi
   script="$(tui_stage_part "$id" script)"
+  if [[ "$id" == "3" && "$TUI_SKIP_SMOKE" -eq 1 ]]; then
+    extra+=(--no-smoke)
+  fi
   if [[ ! -t 1 ]]; then
-    "${SCRIPTS_DIR}/${script}.sh" --no-prompt ${LAB_FORWARD[@]+"${LAB_FORWARD[@]}"}
+    "${SCRIPTS_DIR}/${script}.sh" --no-prompt ${extra[@]+"${extra[@]}"} ${LAB_FORWARD[@]+"${LAB_FORWARD[@]}"}
     return $?
   fi
 
   tui_enter
   if [[ "$(tui_stage_state "$id")" == "done" ]]; then
     tui_log info "Stage $id already done. Finished steps will be skipped."
+  fi
+  if [[ "$id" == "3" && "$TUI_SKIP_SMOKE" -eq 1 ]]; then
+    tui_log info "Stage 3 will not boot a VM. Stage 5 starts the lab."
   fi
   if [[ "$id" == "5" ]]; then
     tui_log warn "Stage 5 powers the lab VMs on, then stops them."
@@ -576,7 +768,7 @@ tui_run_stage() {
   tui_log warn "Starting stage $id — $title"
   TUI_RUNNING="$id"
   TUI_LIVE_PCT=""
-  cmd="$(printf '%q ' env LAB_LOG_CAPTURE=1 ${GA_ROOT_DIR:+GA_ROOT_DIR="$GA_ROOT_DIR"} "${SCRIPTS_DIR}/${script}.sh" --no-prompt ${LAB_FORWARD[@]+"${LAB_FORWARD[@]}"})"
+  cmd="$(printf '%q ' env LAB_LOG_CAPTURE=1 ${GA_ROOT_DIR:+GA_ROOT_DIR="$GA_ROOT_DIR"} "${SCRIPTS_DIR}/${script}.sh" --no-prompt ${extra[@]+"${extra[@]}"} ${LAB_FORWARD[@]+"${LAB_FORWARD[@]}"})"
   set +e
   tui_capture "$cmd"
   rc=$?
@@ -616,6 +808,7 @@ tui_priv_release() {
 
 tui_run_all() {
   local id state rc=0
+  TUI_SKIP_SMOKE=1
   hv_load
   if tui_run_will_need_privileges; then
     tui_log warn "Sudo is needed to mount guest disks. Asking now, before the long stages."
@@ -644,6 +837,7 @@ tui_run_all() {
     fi
   done
   tui_priv_release
+  TUI_SKIP_SMOKE=0
   [[ "$rc" -eq 0 ]] || return "$rc"
   tui_log ok "Run all finished."
   [[ -t 1 && "$TUI_ALT" -eq 1 ]] && tui_draw

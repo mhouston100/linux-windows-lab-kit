@@ -236,6 +236,9 @@ while IFS=$'\t' read -r name role memory_mb cpus disk nic1 nic2 notes || [[ -n "
   created+=("$name")
 done <"$TOPOLOGY_FILE"
 
+if [[ "$SMOKE" -eq 0 ]]; then
+  log "Skipping smoke boot. A later start plants Guest Additions and boots the lab."
+fi
 if [[ "$SMOKE" -eq 1 && ${#created[@]} -gt 0 ]]; then
   # Prefer lightest VM for smoke (GW1) if present, else first
   smoke_target=""

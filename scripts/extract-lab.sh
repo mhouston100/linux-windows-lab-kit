@@ -131,9 +131,11 @@ extract_zpaq() {
   fi
 
   # Use -to so Wine/zpaq cannot spill into the wrong CWD (seen extracting into /virtualmachines/).
+  # The marker is written only after this returns. An interrupt leaves it unset,
+  # so the next run extracts again.
   if ! run_zpaq x "$archive" -f -s1 -to "${ZPAQ_DIR}/"; then
     warn "zpaq with -s1 failed; retrying without summary flag"
-    run_zpaq x "$archive" -f -to "${ZPAQ_DIR}/"
+    run_zpaq x "$archive" -f -to "${ZPAQ_DIR}/" || die "ZPAQ extract failed"
   fi
 
   local count

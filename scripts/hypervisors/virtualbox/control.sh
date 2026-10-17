@@ -18,14 +18,14 @@ usage() {
 Usage: lab-ctl.sh <command> [options]
 
 Commands:
-  start [--no-wait]   Start VMs in boot-order (default waits between)
+  start [--no-wait]   Start VMs in boot-order. The settle time runs during the Guest Additions wait
   stop                Power off VMs in reverse boot-order
   status              Show VMState for each lab VM
   health              status + VirtualBox disk and network checks
   list                List topology VMs and boot order
 
 Options:
-  --no-wait           Do not sleep wait_seconds between starts
+  --no-wait           Do not apply the settle time between starts
   --boot-order FILE   Override config/boot-order.tsv
 EOF
 }
@@ -85,7 +85,7 @@ cmd_list() {
 
 cmd_start() {
   load_boot_order
-  local i name state
+  local i name state started now elapsed w remain
   ga_sudo_begin
   for i in "${!NAMES[@]}"; do
     name="${NAMES[$i]}"
@@ -102,6 +102,8 @@ cmd_start() {
       warn "VM not registered: $name — skip"
       continue
     fi
+    # The settle clock starts here, including the Guest Additions wait.
+    started="$(date +%s)"
     if [[ "$state" != "running" ]]; then
       log "Starting $name (order=${ORDERS[$i]})"
       VBoxManage startvm "$name" --type headless
@@ -110,10 +112,17 @@ cmd_start() {
     fi
     ga_wait_vm "$name"
     if [[ "$WAIT" -eq 1 ]]; then
-      local w="${WAITSECS[$i]}"
+      w="${WAITSECS[$i]}"
       if [[ "$w" -gt 0 ]]; then
-        log "Waiting ${w}s for $name to settle..."
-        sleep "$w"
+        now="$(date +%s)"
+        elapsed=$((now - started))
+        if [[ "$elapsed" -lt "$w" ]]; then
+          remain=$((w - elapsed))
+          log "Waiting ${remain}s more for $name to settle (${elapsed}s of ${w}s already elapsed)"
+          sleep "$remain"
+        else
+          log "$name settle time already elapsed (${elapsed}s, ${w}s required)"
+        fi
       fi
     fi
   done

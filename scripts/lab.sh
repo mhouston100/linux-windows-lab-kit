@@ -31,7 +31,8 @@ Commands:
   status   Print the task list and exit
   phaseN   Run that stage if its dependency marker exists
   all      Run every stage that is not done, in order. Stops when one fails
-           or when the next stage is blocked. Stage 5 starts the VMs.
+           or when the next stage is blocked. Stage 3 does not boot a VM.
+           Stage 5 starts the VMs, then stops them.
 
 Stages:
   1 extract    always, once the kit ZIP is on disk

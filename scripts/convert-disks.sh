@@ -67,8 +67,24 @@ fi
 FLATTEN_PROJ="${ROOT_DIR}/tools/VhdxFlatten/VhdxFlatten.csproj"
 [[ -f "$FLATTEN_PROJ" ]] || die "Missing $FLATTEN_PROJ"
 
-log "Building VhdxFlatten..."
-dotnet build "$FLATTEN_PROJ" -c Release -v q
+flatten_dll="${ROOT_DIR}/tools/VhdxFlatten/bin/Release/net10.0/VhdxFlatten.dll"
+flatten_stale=0
+if [[ ! -f "$flatten_dll" ]]; then
+  flatten_stale=1
+else
+  for src in "${ROOT_DIR}/tools/VhdxFlatten/"*.cs "${ROOT_DIR}/tools/VhdxFlatten/"*.csproj; do
+    if [[ -f "$src" && "$src" -nt "$flatten_dll" ]]; then
+      flatten_stale=1
+      break
+    fi
+  done
+fi
+if [[ "$flatten_stale" -eq 1 ]]; then
+  log "Building VhdxFlatten..."
+  dotnet build "$FLATTEN_PROJ" -c Release -v q
+else
+  log "VhdxFlatten is already built"
+fi
 FLATTEN=(dotnet run --project "$FLATTEN_PROJ" -c Release --no-build --)
 
 {
@@ -77,7 +93,7 @@ FLATTEN=(dotnet run --project "$FLATTEN_PROJ" -c Release --no-build --)
 
 convert_one() {
   local src="$1" parent="$2" note="$3"
-  local base out flat
+  local base out flat started elapsed method
   base="$(basename "$src")"
   base="${base%.*}"
   # Normalize extension casing
@@ -117,10 +133,12 @@ convert_one() {
   esac
 
   log "Converting: $src"
+  started="$(date +%s)"
 
   if [[ "$note" == qemu-ok ]] || qemu-img info "$src" >/dev/null 2>&1; then
+    method="qemu-img"
     qemu-img convert -p -f vhdx -O "$FORMAT" "$src" "$out"
-    printf '%s\t%s\t%s\t%s\n' "$src" "-" "$out" "qemu-img" >>"$CONV_MAP"
+    printf '%s\t%s\t%s\t%s\n' "$src" "-" "$out" "$method" >>"$CONV_MAP"
   else
     [[ -n "$parent" && "$parent" != "-" && -f "$parent" ]] || \
       die "Differencing disk needs parent: $src"
@@ -133,13 +151,15 @@ convert_one() {
     fi
 
     rm -f "$flat"
+    method="flatten+qemu-img"
     "${FLATTEN[@]}" "$src" "$flat" --parent "$parent"
     qemu-img convert -p -f vhdx -O "$FORMAT" "$flat" "$out"
-    printf '%s\t%s\t%s\t%s\n' "$src" "$flat" "$out" "flatten+qemu-img" >>"$CONV_MAP"
+    printf '%s\t%s\t%s\t%s\n' "$src" "$flat" "$out" "$method" >>"$CONV_MAP"
   fi
 
   hv_verify_disk "$out"
-  log "OK: $out"
+  elapsed=$(( $(date +%s) - started ))
+  log "OK: $out (${elapsed}s, ${method})"
 }
 
 # Convert parents first, then children (map order may be mixed — do two passes)
