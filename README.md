@@ -34,10 +34,10 @@ Client VMs (domain-joined and workgroup Windows 11 machines built from `WindowsP
 |-----|--------|
 | `1`–`6` | Run that stage |
 | `a` | Run every stage that has not passed yet, in order |
-| `c` | Reset this lab, after you type `YES` |
+| `c` | Reset this lab, after you confirm |
 | `q` | Leave the menu |
 
-Each stage has its own progress bar. Gray means waiting, orange means running or blocked, green with a tick means the checkpoint passed, and red means the stage failed. A stage whose dependency has not passed stays orange and is refused. The bottom pane is the log. The same lines are appended to `tmp/lab.log` under the destination (default `/virtualmachines/tmp/lab.log`). That file stays when you quit and when you reset the lab. Interrupt a running stage and the menu comes back; the stage's marker is left unset, so the next run retries it.
+Each stage has its own progress bar, drawn as a filled block beside an empty one. The list, the key prompt, and the log tail are three boxes, stacked, so each section is separate. The list is the top box, the prompt is the box under it, and the log tail starts on the next box. Gray means waiting, orange means running or blocked, green with a tick means the checkpoint passed, and red means the stage failed. A stage whose dependency has not passed stays orange and is refused. The same lines are appended to `tmp/lab.log` under the destination (default `/virtualmachines/tmp/lab.log`). That file stays when you quit and when you reset the lab. Interrupt a running stage and the menu comes back; the stage's marker is left unset, so the next run retries it.
 
 From a shell without a terminal, `./scripts/lab.sh` prints the checklist and exits 0 only when every marker is present.
 
@@ -177,7 +177,7 @@ Phase 5 runs health, a start with `--no-wait`, and a stop, then checks that the 
 
 Phase 6 does not delete the lab. It checks that `cleanup-lab.sh` refuses to run without `--yes`, refuses to run when nothing is selected, refuses `--reset` without `--yes`, and that the three lab VMs are still present.
 
-Press `c` in the menu to reset the lab. The menu asks you to type `YES` on the terminal, then deletes:
+Press `c` in the menu to reset the lab. The menu asks you to confirm, then deletes:
 
 - every VM named by an active row in `config/topology.tsv`, after powering it off
 - that VM's folder under the destination
@@ -237,7 +237,7 @@ Build output under `tools/**/bin` and `tools/**/obj` is gitignored. So are `conf
 
 `third_party/nuget/` holds DiscUtils 0.16.13 (Kenneth Bell, Quamotion, LordMike, and other contributors) and `Microsoft.Win32.Registry` 5.0.0. Both are MIT licensed. The notice is `third_party/nuget/LICENSE.txt`. `nuget.config` resolves those packages from the repository and leaves nuget.org available for the .NET SDK's own targeting packs.
 
-`third_party/gum/2.0.2/` holds the Gum 2.0.2 Linux amd64 binary from the upstream release archive. Gum is MIT, copyright Charmbracelet, Inc., and that notice is `LICENSE` beside the binary. `licenses/` holds the MIT and BSD-3-Clause notices for the Go modules linked into the binary. Those files stay with any copy of the binary. `SOURCE.txt` records the archive URL, the checksum, and that requirement. The script does not call Gum yet.
+`third_party/gum/2.0.2/` holds the Gum 2.0.2 Linux amd64 binary from the upstream release archive. Gum is MIT, copyright Charmbracelet, Inc., and that notice is `LICENSE` beside the binary. `licenses/` holds the MIT and BSD-3-Clause notices for the Go modules linked into the binary. Those files stay with any copy of the binary. `SOURCE.txt` records the archive URL, the checksum, and that requirement. The menu uses that binary to draw the stage list and the log tail.
 
 The orchestration is Bash. There is no Python or Node dependency.
 

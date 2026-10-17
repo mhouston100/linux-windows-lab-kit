@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Fixed terminal screen for lab.sh. No extra packages: ANSI, tput, and script(1)
-# so a running stage still thinks it has a terminal (live progress) without
-# painting over this layout.
+# Fixed terminal screen for lab.sh. Gum draws the stage list and the log tail.
+# script(1) still gives a running stage a terminal so its progress can be read
+# without painting over this layout.
 #
-# The stage list stays at the top. Each row has its own bar. Output from the
-# stage is appended to the log pane at the bottom, which shows the newest lines.
+# Three bordered sections, stacked: the stage list, the key prompt, then the
+# log tail. Gum has no progress widget, so each bar is a filled block and an
+# empty block joined together.
 #
 # Severity, from low impact to high:
 #   gray    informational, not started
@@ -34,6 +35,7 @@ TUI_CHILD=""
 TUI_CANCEL=0
 TUI_ALT=0
 TUI_STTY=""
+TUI_LIST_LINES=0
 
 tui_enable_color() {
   C_RESET=""
@@ -216,20 +218,12 @@ tui_stage_pct() {
   printf '%s\n' "$base"
 }
 
-tui_bar_plain() {
-  local pct="$1"
-  local width="$2"
-  local filled empty
-  [[ "$pct" -lt 0 ]] && pct=0
-  [[ "$pct" -gt 100 ]] && pct=100
-  filled=$((pct * width / 100))
-  empty=$((width - filled))
-  if [[ "$filled" -gt 0 ]]; then
-    printf '%*s' "$filled" '' | tr ' ' '#'
-  fi
-  if [[ "$empty" -gt 0 ]]; then
-    printf '%*s' "$empty" '' | tr ' ' '-'
-  fi
+tui_blocks() {
+  local n="$1" glyph="$2" out="" i
+  for ((i = 0; i < n; i++)); do
+    out+="$glyph"
+  done
+  printf '%s' "$out"
 }
 
 tui_fit() {
@@ -242,17 +236,60 @@ tui_fit() {
   fi
 }
 
-tui_row() {
-  local color="$1"
-  local text="$2"
-  local cols="${3:-80}"
-  local nl="${4:-1}"
-  text="$(tui_fit "$text" "$((cols - 1))")"
-  if [[ "$nl" -eq 1 ]]; then
-    printf '%b%s%b\033[K\n' "$color" "$text" "$C_RESET"
+tui_gum() {
+  # Captured output is not a terminal. Force the colors anyway.
+  CLICOLOR_FORCE=1 "${ROOT_DIR}/third_party/gum/2.0.2/linux-amd64/gum" "$@"
+}
+
+# One styled line, without the trailing newline gum adds.
+tui_gum_text() {
+  tui_gum style "$@" | tr -d '\n'
+}
+
+# Filled and empty blocks in two colors. Gum has no progress-bar command.
+tui_gum_bar() {
+  local pct="$1" color="$2" width="$3"
+  local filled empty fill_s empty_s
+  [[ "$pct" -lt 0 ]] && pct=0
+  [[ "$pct" -gt 100 ]] && pct=100
+  [[ "$width" -lt 1 ]] && width=1
+  filled=$((pct * width / 100))
+  empty=$((width - filled))
+  fill_s="$(tui_blocks "$filled" "█")"
+  empty_s="$(tui_blocks "$empty" "░")"
+  if [[ -n "$fill_s" && -n "$empty_s" ]]; then
+    tui_gum join --horizontal \
+      "$(tui_gum_text --foreground "$color" -- "$fill_s")" \
+      "$(tui_gum_text --foreground 240 -- "$empty_s")" | tr -d '\n'
+  elif [[ -n "$fill_s" ]]; then
+    tui_gum_text --foreground "$color" -- "$fill_s"
   else
-    printf '%b%s%b\033[K' "$color" "$text" "$C_RESET"
+    tui_gum_text --foreground 240 -- "$empty_s"
   fi
+}
+
+# Border around whatever is piped in. Inner color is kept.
+tui_gum_box_stream() {
+  local color="$1" width="$2"
+  tui_gum style --no-strip-ansi --border rounded --padding "0 1" --border-foreground "$color" --width "$width"
+}
+
+tui_stage_row() {
+  local id="$1" dest="$2" title_w="$3" bar_w="$4"
+  local title state pct color mark label bar stat
+  title="$(tui_stage_part "$id" title)"
+  state="$(tui_stage_state "$id")"
+  pct="$(tui_stage_pct "$id")"
+  case "$state" in
+    done) color=10; mark="✓" ;;
+    running) color=208; mark=">" ;;
+    blocked) color=208; mark="!" ;;
+    *) color=245; mark=" " ;;
+  esac
+  label="$(tui_gum_text --bold --foreground "$color" -- "$(printf '%s %s  %-*.*s' "$mark" "$id" "$title_w" "$title_w" "$title")")"
+  bar="$(tui_gum_bar "$pct" "$color" "$bar_w")"
+  stat="$(tui_gum_text --foreground "$color" -- "$(printf '%3d%%  %-7.7s' "$pct" "$state")")"
+  printf '%s  %s  %s' "$label" "$bar" "$stat" >"$dest"
 }
 
 tui_classify() {
@@ -298,78 +335,103 @@ tui_pump_buf() {
   done
 }
 
+tui_prompt_line() {
+  if [[ "$TUI_RUNNING" == "reset" ]]; then
+    printf '%s\n' "> Resetting this lab. Interrupt returns to the menu."
+  elif [[ -n "$TUI_RUNNING" ]]; then
+    printf '%s\n' "> Running stage ${TUI_RUNNING}. Interrupt returns to the menu."
+  else
+    printf '%s\n' "> 1-6 stage    a run all    c reset    q quit"
+  fi
+}
+
 tui_draw() {
-  local cols rows id title state pct bar word color plain
-  local note level text shown start idx
+  local cols rows box_w inner title_w bar_w id dir
+  local content start idx note level text color line count n
+  local -a log_text=() log_color=()
   cols="$(tput cols 2>/dev/null || echo 80)"
   rows="$(tput lines 2>/dev/null || echo 24)"
   [[ "$cols" -lt 40 ]] && cols=40
-  [[ "$rows" -lt 16 ]] && rows=16
-
-  printf '\033[H'
-  tui_row "$C_BOLD" "Linux Windows Lab Kit" "$cols"
-  tui_row "$C_DIM" "  kit   ${LAB_ZIP_PATH:-<unset>}" "$cols"
-  tui_row "$C_DIM" "  dest  ${VM_ROOT:-<unset>}    source=${SOURCE_DIR:-<unset>}  tmp=${TMP_DIR:-<unset>}" "$cols"
-  tui_row "$C_DIM" "  log   ${TMP_DIR:-<unset>}/lab.log" "$cols"
-  tui_row "" "" "$cols"
-
-  for id in 1 2 3 4 5 6; do
-    title="$(tui_stage_part "$id" title)"
-    state="$(tui_stage_state "$id")"
-    pct="$(tui_stage_pct "$id")"
-    bar="$(tui_bar_plain "$pct" 16)"
-    case "$state" in
-      done) color="$C_GREEN"; word="done" ;;
-      running) color="$C_ORANGE"; word="running" ;;
-      blocked) color="$C_ORANGE"; word="blocked" ;;
-      *) color="$C_DIM"; word="ready" ;;
-    esac
-    if [[ "$state" == "done" ]]; then
-      plain="$(printf ' ✓ %s %-22.22s [%s] %3d%%  %s' "$id" "$title" "$bar" "$pct" "$word")"
-    else
-      plain="$(printf '   %s %-22.22s [%s] %3d%%  %s' "$id" "$title" "$bar" "$pct" "$word")"
-    fi
-    tui_row "$color" "$plain" "$cols"
+  [[ "$rows" -lt 20 ]] && rows=20
+  box_w=$((cols - 2))
+  inner=$((box_w - 4))
+  [[ "$inner" -lt 24 ]] && inner=24
+  title_w=22
+  bar_w=16
+  local need=$((5 + title_w + 4 + bar_w + 13))
+  while [[ "$need" -gt "$inner" && "$bar_w" -gt 8 ]]; do
+    bar_w=$((bar_w - 2))
+    need=$((5 + title_w + 4 + bar_w + 13))
   done
+  while [[ "$need" -gt "$inner" && "$title_w" -gt 8 ]]; do
+    title_w=$((title_w - 2))
+    need=$((5 + title_w + 4 + bar_w + 13))
+  done
+  dir="$(mktemp -d "${TMPDIR:-/tmp}/lab-tui-draw.XXXXXX")"
 
-  tui_row "" "" "$cols"
-  tui_row "$C_BOLD" "Log" "$cols"
+  tui_gum_text --bold --foreground 255 -- "$(tui_fit "Linux Windows Lab Kit" "$inner")" >"$dir/00title" &
+  for id in 1 2 3 4 5 6; do
+    tui_stage_row "$id" "$dir/1$id" "$title_w" "$bar_w" &
+  done
+  tui_gum_text --bold --foreground 99 -- "$(tui_fit "$(tui_prompt_line)" "$inner")" >"$dir/2prompt" &
 
-  # Title, kit, dest, log path, blank, 6 stages, blank, "Log" = 13. Last row is the prompt.
-  local log_h=$((rows - 14))
-  [[ "$log_h" -lt 2 ]] && log_h=2
-  local count="${#TUI_LOG[@]}"
+  content=$((rows - 15))
+  [[ "$content" -lt 2 ]] && content=2
+  log_text+=("$(tui_fit "Log" "$inner")")
+  log_color+=(245)
+  count="${#TUI_LOG[@]}"
   start=0
-  if [[ "$count" -gt "$log_h" ]]; then
-    start=$((count - log_h))
+  if [[ "$count" -gt $((content - 1)) ]]; then
+    start=$((count - (content - 1)))
   fi
-  shown=0
+  if [[ "$count" -eq 0 ]]; then
+    log_text+=("$(tui_fit "(waiting for output)" "$inner")")
+    log_color+=(245)
+  fi
   for ((idx = start; idx < count; idx++)); do
     note="${TUI_LOG[$idx]}"
     level="${note%%|*}"
     text="${note#*|}"
     case "$level" in
-      ok) color="$C_GREEN" ;;
-      warn) color="$C_ORANGE" ;;
-      error) color="$C_RED" ;;
-      *) color="$C_DIM" ;;
+      ok) level="OK"; color=10 ;;
+      warn) level="WARN"; color=208 ;;
+      error) level="ERROR"; color=196 ;;
+      *) level="INFO"; color=245 ;;
     esac
-    tui_row "$color" "  $text" "$cols"
-    shown=$((shown + 1))
+    log_text+=("$(tui_fit "$(printf '%-5s %s' "$level" "$text")" "$inner")")
+    log_color+=("$color")
   done
-  while [[ "$shown" -lt "$log_h" ]]; do
-    tui_row "" "" "$cols"
-    shown=$((shown + 1))
+  for n in "${!log_text[@]}"; do
+    tui_gum_text --foreground "${log_color[$n]}" -- "${log_text[$n]}" >"$dir/4log$(printf '%02d' "$n")" &
   done
+  wait || true
 
-  if [[ "$TUI_RUNNING" == "reset" ]]; then
-    tui_row "$C_ORANGE" "Resetting this lab. Interrupt returns to the menu." "$cols" 0
-  elif [[ -n "$TUI_RUNNING" ]]; then
-    tui_row "$C_ORANGE" "Running stage ${TUI_RUNNING}. Interrupt returns to the menu." "$cols" 0
-  else
-    tui_row "$C_BOLD" "Press 1-6, a = run all, c = reset lab, q = quit" "$cols" 0
-  fi
+  {
+    cat "$dir/00title"
+    printf '\n'
+    for id in 1 2 3 4 5 6; do
+      cat "$dir/1$id"
+      printf '\n'
+    done
+  } | tui_gum_box_stream 99 "$box_w" >"$dir/boxstages"
+  {
+    cat "$dir/2prompt"
+    printf '\n'
+  } | tui_gum_box_stream 212 "$box_w" >"$dir/boxprompt"
+  {
+    for n in "${!log_text[@]}"; do
+      cat "$dir/4log$(printf '%02d' "$n")"
+      printf '\n'
+    done
+  } | tui_gum_box_stream 245 "$box_w" >"$dir/boxlog"
+
+  printf '\033[H'
+  cat "$dir/boxstages" "$dir/boxprompt"
+  TUI_LIST_LINES="$(cat "$dir/boxstages" "$dir/boxprompt" | wc -l)"
+  TUI_LIST_LINES="${TUI_LIST_LINES//[[:space:]]/}"
+  cat "$dir/boxlog"
   printf '\033[J'
+  rm -rf "$dir"
 }
 
 # Ctrl+C is a byte while ISIG is off. bash read turns ISIG back on, so this
@@ -582,24 +644,25 @@ tui_run_all() {
   return 0
 }
 
-# YES is read on the real terminal. A stage's captured pty cannot see the keyboard.
+# Confirm on the real terminal, just under the stage list. A stage's captured
+# pty cannot see the keyboard.
 tui_confirm_reset() {
-  local reply=""
+  local rc=1
   tui_log warn "Reset deletes the lab VMs, their folders, and source/. tmp is cleared except lab.log. The kit ZIP is kept."
   [[ -t 1 && "$TUI_ALT" -eq 1 ]] && tui_draw
   printf '\033[?25h'
-  stty echo icanon isig 2>/dev/null || true
-  printf '%bType YES to reset this lab: %b' "$C_BOLD" "$C_RESET" >/dev/tty
-  IFS= read -r reply </dev/tty || reply=""
-  if [[ -n "$TUI_STTY" && -t 0 ]]; then
-    stty "$TUI_STTY" 2>/dev/null || true
+  if [[ "$TUI_LIST_LINES" -gt 0 ]]; then
+    tput cup "$TUI_LIST_LINES" 0 2>/dev/null || true
+  fi
+  if tui_gum confirm --affirmative Reset --negative Cancel \
+    "Reset this lab? Deletes the lab VMs, source, and tmp except lab.log. Keeps the kit ZIP."; then
+    rc=0
+  else
+    tui_log warn "Reset cancelled."
+    rc=1
   fi
   printf '\033[?25l'
-  if [[ "$reply" != "YES" ]]; then
-    tui_log warn "Reset cancelled."
-    return 1
-  fi
-  return 0
+  return "$rc"
 }
 
 tui_run_reset() {
@@ -630,6 +693,9 @@ tui_menu() {
   tui_enter
   trap 'tui_leave; exit 130' INT
   trap 'tui_leave' EXIT
+  if [[ ! -x "${ROOT_DIR}/third_party/gum/2.0.2/linux-amd64/gum" ]]; then
+    die "Gum binary is missing: ${ROOT_DIR}/third_party/gum/2.0.2/linux-amd64/gum"
+  fi
   tui_log info "Session log: ${TMP_DIR:-<unset>}/lab.log"
   tui_log info "Pick a stage. A blocked stage runs only after the stage it depends on has finished. c resets this lab."
   while true; do
