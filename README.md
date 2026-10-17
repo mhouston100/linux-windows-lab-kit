@@ -1,3 +1,5 @@
+NOTE: This was written almost entirely by Cursor. I didn't really want to make this project, I was just trying to get a working lab on Linux and I got sick of the bullshit Microsoft trial versions expiring. This should ease that process of re-staging the dev lab quickly.
+
 # Linux Windows Lab Kit
 
 Bash scripts that build a Windows lab on a Linux host from a Microsoft lab ZIP you already have. You supply the archive and the licenses. The repository holds the orchestration only.
