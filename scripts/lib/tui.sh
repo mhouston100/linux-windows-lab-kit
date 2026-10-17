@@ -348,7 +348,7 @@ tui_prompt_line() {
 tui_draw() {
   local cols rows box_w inner title_w bar_w id dir
   local content start idx note level text color line count n
-  local -a log_text=() log_color=()
+  local -a log_text=() log_color=() pids=()
   cols="$(tput cols 2>/dev/null || echo 80)"
   rows="$(tput lines 2>/dev/null || echo 24)"
   [[ "$cols" -lt 40 ]] && cols=40
@@ -370,10 +370,13 @@ tui_draw() {
   dir="$(mktemp -d "${TMPDIR:-/tmp}/lab-tui-draw.XXXXXX")"
 
   tui_gum_text --bold --foreground 255 -- "$(tui_fit "Linux Windows Lab Kit" "$inner")" >"$dir/00title" &
+  pids+=("$!")
   for id in 1 2 3 4 5 6; do
     tui_stage_row "$id" "$dir/1$id" "$title_w" "$bar_w" &
+    pids+=("$!")
   done
   tui_gum_text --bold --foreground 99 -- "$(tui_fit "$(tui_prompt_line)" "$inner")" >"$dir/2prompt" &
+  pids+=("$!")
 
   content=$((rows - 15))
   [[ "$content" -lt 2 ]] && content=2
@@ -403,8 +406,11 @@ tui_draw() {
   done
   for n in "${!log_text[@]}"; do
     tui_gum_text --foreground "${log_color[$n]}" -- "${log_text[$n]}" >"$dir/4log$(printf '%02d' "$n")" &
+    pids+=("$!")
   done
-  wait || true
+  # Wait only for these draws. A bare wait also reaps the stage script, and
+  # the capture loop then reports exit 127 for a run that already finished.
+  wait "${pids[@]}" || true
 
   {
     cat "$dir/00title"
