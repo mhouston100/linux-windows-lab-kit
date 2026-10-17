@@ -6,7 +6,11 @@ Bash scripts that build a Windows lab on a Linux host from a Microsoft lab ZIP y
 - **Six stages.** Extract the archive, convert the Hyper-V disks, create the virtual machines, write the lab account notes, start the machines in order, then check that cleanup will not delete the lab by accident.
 - **One screen.** `./scripts/lab.sh` shows the stages, the key prompt, and the live log. Press `1`–`6` for one stage, `a` to run whatever is left, `c` to reset, or `q` to leave.
 - **It picks up where it stopped.** A finished step is skipped until you reset or pass `--force`. Reset removes this lab only. The ZIP and any other virtual machines on the host stay.
-- **VirtualBox today.** Guest Additions are planted before the servers boot, and the domain controller starts before the other two. Another hypervisor can be added later as its own backend.
+- **Platforms**
+  - ✅ VirtualBox
+  - libvirt — pending
+  - Proxmox — pending
+  - VMware Workstation — pending
 
 ## Operator guide
 
