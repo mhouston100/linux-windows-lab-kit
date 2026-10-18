@@ -6,7 +6,7 @@ Bash scripts that build a Windows lab on a Linux host from a Microsoft lab ZIP y
 
 - **Three servers.** A domain controller, a Configuration Manager server, and a gateway. They share an internal network. The gateway also has NAT, so the lab can reach the Internet.
 - **Six stages.** Extract the archive, convert the Hyper-V disks, create the virtual machines, write the lab account notes, start the machines in order, then check that cleanup will not delete the lab by accident.
-- **One screen.** `./scripts/lab.sh` shows the stages, the key prompt, and the live log. Press `1`–`6` for one stage, `a` to run whatever is left, `c` to reset, or `q` to leave.
+- **One screen.** `./scripts/lab.sh` opens a Python menu. Press `1`–`6` for one stage, `a` to run whatever is left, `s` to change settings, `c` to reset, or `q` to leave. The stage scripts stay Bash.
 - **It picks up where it stopped.** A finished step is skipped until you reset or pass `--force`. Reset removes this lab only. The ZIP and any other virtual machines on the host stay.
 - **Platforms**
   - ✅ VirtualBox
@@ -44,16 +44,17 @@ Client VMs (domain-joined and workgroup Windows 11 machines built from `WindowsP
 
 ## What a run actually does
 
-`./scripts/lab.sh` is the entry point. On a terminal it opens one screen and stays there. Press a key; Enter is not required.
+`./scripts/lab.sh` is the entry point. On a terminal it opens the Python menu and stays there. Press a key; Enter is not required.
 
 | Key | Action |
 |-----|--------|
 | `1`–`6` | Run that stage |
-| `a` | Run every stage that has not passed yet, in order |
+| `a` | Run every stage that has not passed yet, in order. Stage 3 does not boot a VM |
+| `s` | Change kit, destination, domain, account, password, or platform |
 | `c` | Reset this lab, after you confirm |
 | `q` | Leave the menu |
 
-Each stage has its own progress bar, drawn as a filled block beside an empty one. The list, the key prompt, and the log tail are three boxes, stacked, so each section is separate. The list is the top box, the prompt is the box under it, and the log tail starts on the next box. Gray means waiting, orange means running or blocked, green with a tick means the checkpoint passed, and red means the stage failed. A stage whose dependency has not passed stays orange and is refused. The same lines are appended to `tmp/lab.log` under the destination (default `/virtualmachines/tmp/lab.log`). That file stays when you quit and when you reset the lab. Interrupt a running stage and the menu comes back; the stage's marker is left unset, so the next run retries it.
+The screen shows the current settings, a progress bar for each stage, and the live log. `s` opens a form and writes `config/lab.env`. A blank password keeps the current one, and the password is never shown. While a stage is running, the settings stay as they were when the stage started. A blocked stage is refused until the stage it depends on has passed. The same lines are appended to `tmp/lab.log` under the destination (default `/virtualmachines/tmp/lab.log`). That file stays when you quit and when you reset the lab. Interrupt a running stage and the menu comes back; the stage's marker is left unset, so the next run retries it.
 
 From a shell without a terminal, `./scripts/lab.sh` prints the checklist and exits 0 only when every marker is present.
 
@@ -78,10 +79,11 @@ Finished steps record a timestamp under `TMP_DIR/.markers`. The next run skips a
    ```
 
 2. Put the lab ZIP somewhere with a lot of free space. The default path is `/virtualmachines/Kit/Original/Win11_25H2_Lab.zip`. Extraction, the flattened disks, and the VM copies need substantially more than the 32 GB archive.
-3. Install the host tools. The scripts print distro-specific hints and do not install packages for you.
+3. Install the host tools, then the menu's Python library. The scripts do not install packages for you.
 
    ```bash
    ./scripts/check-prereqs.sh
+   python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
    ```
 
 | Tool | Used for |
@@ -93,6 +95,7 @@ Finished steps record a timestamp under `TMP_DIR/.markers`. The next run skips a
 | `dotnet` | Build `tools/VhdxFlatten` and `tools/HiveSet` |
 | `VBoxManage` | The VirtualBox backend |
 | `qemu-nbd`, `ntfs-3g` | Mount a guest disk to plant Guest Additions. Stages 3 and 5 ask for sudo once for this mount |
+| `python3`, Textual | The menu. Stage scripts stay Bash. Install Textual with the venv command above |
 
 Large media stays under the destination, default `/virtualmachines`. It does not go into this git repository and it does not need to go under your home directory.
 
@@ -103,7 +106,7 @@ Large media stays under the destination, default `/virtualmachines`. It does not
 | `/virtualmachines/tmp` | ZPAQ unpack, setup resources, inventory, converted disks, identity files, markers, `lab.log` |
 | `/virtualmachines/HYD-*` | Virtual machine folders and the disks those VMs boot |
 
-`--kit` selects the ZIP. `--dest` selects the output root: `source/` and `tmp/` are created under it, and the root itself is the virtual machine folder. Flags override `config/lab.env`. Interactive runs prompt for the paths; Enter accepts the default. `--no-prompt` or `LAB_NONINTERACTIVE=1` skips the prompts.
+`--kit` selects the ZIP. `--dest` selects the output root: `source/` and `tmp/` are created under it, and the root itself is the virtual machine folder. Flags override `config/lab.env`. The menu edits the same file with `s`. A phase script run on its own still asks for the paths; Enter accepts the default. `--no-prompt` or `LAB_NONINTERACTIVE=1` skips those prompts.
 
 ## Configuration
 
@@ -237,15 +240,15 @@ config/lab.env.example          # copy to lab.env; lab.env is gitignored
 config/topology.tsv             # shared VM shape
 config/boot-order.tsv           # start order and pauses
 config/hypervisors/virtualbox/  # VirtualBox guest OS ids
-scripts/lab.sh                  # menu and stage runner
-scripts/phase1.sh … phase6.sh   # one stage each
-scripts/lib/                    # config, checklist, menu, hypervisor loader
+scripts/lab.sh                  # starts the Python menu
+python/labkit/                  # Textual menu, settings, stage runner
+scripts/phase1.sh … phase6.sh   # one Bash stage each
+scripts/lib/                    # config, checklist, hypervisor loader
 scripts/hypervisors/virtualbox/ # VirtualBox create, control, Guest Additions
 templates/                      # identity notes and client unattend
 tools/VhdxFlatten/              # differencing VHDX flattener
 tools/HiveSet/                  # offline registry writer
 third_party/nuget/              # DiscUtils and Registry packages, MIT
-third_party/gum/                # Gum 2.0.2 binary and license notices
 docs/SPEC.md                    # short spec
 ```
 
@@ -255,9 +258,7 @@ Build output under `tools/**/bin` and `tools/**/obj` is gitignored. So are `conf
 
 `third_party/nuget/` holds DiscUtils 0.16.13 (Kenneth Bell, Quamotion, LordMike, and other contributors) and `Microsoft.Win32.Registry` 5.0.0. Both are MIT licensed. The notice is `third_party/nuget/LICENSE.txt`. `nuget.config` resolves those packages from the repository and leaves nuget.org available for the .NET SDK's own targeting packs.
 
-`third_party/gum/2.0.2/` holds the Gum 2.0.2 Linux amd64 binary from the upstream release archive. Gum is MIT, copyright Charmbracelet, Inc., and that notice is `LICENSE` beside the binary. `licenses/` holds the MIT and BSD-3-Clause notices for the Go modules linked into the binary. Those files stay with any copy of the binary. `SOURCE.txt` records the archive URL, the checksum, and that requirement. The menu uses that binary to draw the stage list and the log tail.
-
-The orchestration is Bash. There is no Python or Node dependency.
+The menu uses [Textual](https://textual.textualize.io/), which is MIT licensed and installed from `requirements.txt`. It is not vendored. The stage scripts stay Bash. There is no Node dependency.
 
 ## What is not in git
 

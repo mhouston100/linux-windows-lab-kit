@@ -34,6 +34,7 @@ hint_for() {
         qemu-img) echo "sudo pacman -S qemu-img" ;;
         wine) echo "sudo pacman -S wine" ;;
         zpaq) echo "Native zpaq is often AUR-only; Wine + bundled zpaq.exe is supported: sudo pacman -S wine" ;;
+        python3) echo "sudo pacman -S python" ;;
         *) echo "Install package providing: $pkg" ;;
       esac
       ;;
@@ -44,6 +45,7 @@ hint_for() {
         qemu-img) echo "sudo apt install qemu-utils" ;;
         wine) echo "sudo apt install wine" ;;
         zpaq) echo "sudo apt install zpaq   # or use Wine + bundled zpaq.exe" ;;
+        python3) echo "sudo apt install python3 python3-venv" ;;
         *) echo "Install package providing: $pkg" ;;
       esac
       ;;
@@ -54,6 +56,7 @@ hint_for() {
         qemu-img) echo "sudo dnf install qemu-img" ;;
         wine) echo "sudo dnf install wine" ;;
         zpaq) echo "sudo dnf install zpaq   # or use Wine + bundled zpaq.exe" ;;
+        python3) echo "sudo dnf install python3" ;;
         *) echo "Install package providing: $pkg" ;;
       esac
       ;;
@@ -112,6 +115,24 @@ check_prereqs() {
 
   hv_load
   if ! hv_check_prereqs; then
+    failed=1
+  fi
+
+  local py="python3"
+  if [[ -x "${ROOT_DIR}/.venv/bin/python3" ]]; then
+    py="${ROOT_DIR}/.venv/bin/python3"
+  fi
+  if have_cmd "$py" || [[ -x "$py" ]]; then
+    printf '  [OK]   python3 -> %s\n' "$py"
+    if "$py" -c 'import textual' >/dev/null 2>&1; then
+      printf '  [OK]   textual (menu)\n'
+    else
+      printf '  [WARN] textual missing — the menu needs it\n'
+      printf '         Hint: python3 -m venv .venv && .venv/bin/pip install -r requirements.txt\n'
+    fi
+  else
+    printf '  [MISS] python3\n'
+    printf '         Hint: %s\n' "$(hint_for python3)"
     failed=1
   fi
 
