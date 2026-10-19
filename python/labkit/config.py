@@ -25,6 +25,7 @@ class LabConfig:
     lab_admin_user: str
     lab_admin_password: str
     lab_domain: str
+    parallel: bool = True
 
     @property
     def markers_dir(self) -> Path:
@@ -47,6 +48,12 @@ class LabConfig:
             f"Account  {self.lab_domain} / {self.lab_admin_user}  password {password}",
             f"Hypervisor  {self.hypervisor}  {where}",
         ]
+
+
+def _flag(value: str | None, default: bool) -> bool:
+    if value is None or value == "":
+        return default
+    return value.lower() in {"1", "true", "yes", "on"}
 
 
 def _unquote(value: str) -> str:
@@ -105,6 +112,7 @@ def load_config(root: Path, kit: str | None = None, dest: str | None = None) -> 
         lab_admin_user=values.get("LAB_ADMIN_USER") or "LabAdmin",
         lab_admin_password=values.get("LAB_ADMIN_PASSWORD") or "",
         lab_domain=values.get("LAB_DOMAIN") or "Corp",
+        parallel=_flag(values.get("LAB_PARALLEL"), default=True),
     )
 
 

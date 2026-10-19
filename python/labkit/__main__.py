@@ -9,7 +9,7 @@ from pathlib import Path
 
 from labkit.config import LabConfig, load_config
 from labkit.runner import run_script, stage_args
-from labkit.stages import STAGES, marker_present, stage_by_number, stage_state
+from labkit.stages import STAGES, marker_present, stage_by_number, stages_to_run
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -102,17 +102,18 @@ def main(argv: list[str] | None = None) -> int:
         app.run()
         return 0
     if command == "all":
-        jobs = []
+        chosen, blocked = stages_to_run(config)
+        if blocked:
+            print(blocked, file=sys.stderr)
+            return 1
+        chosen_numbers = {stage.number for stage in chosen}
         for stage in STAGES:
-            state = stage_state(config, stage)
-            if state == "done":
+            if stage.number not in chosen_numbers:
                 print(f"Stage {stage.number} already done — skipped.")
-                continue
-            reason = stage.block_reason(config)
-            if reason:
-                print(reason, file=sys.stderr)
-                return 1
-            jobs.append((stage, stage_args(stage, forward, skip_smoke=True)))
+        if not chosen:
+            print("Run all finished.")
+            return 0
+        jobs = [(stage, stage_args(stage, forward, skip_smoke=True, parallel=config.parallel)) for stage in chosen]
         rc = _run_blocking(config, jobs, forward)
         if rc == 0 and all(marker_present(config, stage.checkpoint) for stage in STAGES):
             print("status: ok (exit 0)")
@@ -123,7 +124,7 @@ def main(argv: list[str] | None = None) -> int:
     if reason:
         print(reason, file=sys.stderr)
         return 1
-    return _run_blocking(config, [(stage, stage_args(stage, forward, skip_smoke=False))], forward)
+    return _run_blocking(config, [(stage, stage_args(stage, forward, skip_smoke=False, parallel=config.parallel))], forward)
 
 
 if __name__ == "__main__":

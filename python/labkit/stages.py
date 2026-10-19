@@ -43,6 +43,23 @@ STAGES: tuple[Stage, ...] = (
 )
 
 
+def stages_to_run(config: LabConfig) -> tuple[list[Stage], str]:
+    """Stages Run all should start, in order.
+
+    A later stage that is only waiting on an earlier one is included.
+    The message is set when the first remaining stage cannot start.
+    """
+    chosen: list[Stage] = []
+    for stage in STAGES:
+        if stage_state(config, stage) == "done":
+            continue
+        reason = stage.block_reason(config)
+        if reason and not chosen:
+            return [], reason
+        chosen.append(stage)
+    return chosen, ""
+
+
 def stage_by_number(number: int) -> Stage:
     for stage in STAGES:
         if stage.number == number:

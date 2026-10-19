@@ -28,11 +28,11 @@ ga_sudo_begin() {
   fi
   if ! sudo -n true 2>/dev/null; then
     log "Administrator password needed to mount guest disks. It is not stored."
-    if [[ -r /dev/tty && -w /dev/tty ]]; then
+    if { : >/dev/tty; } 2>/dev/null; then
       printf '\nPassword for sudo. Used only to mount guest disks. It is not stored.\n' >/dev/tty
-      sudo -v </dev/tty >/dev/tty
+      sudo -v </dev/tty >/dev/tty || die "sudo was not accepted."
     else
-      sudo -v
+      die "No administrator password is available for the disk mount."
     fi
   fi
   ga_root_start

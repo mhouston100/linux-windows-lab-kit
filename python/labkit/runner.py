@@ -114,8 +114,10 @@ def run_script(
     return rc
 
 
-def stage_args(stage: Stage, forward: list[str], skip_smoke: bool) -> list[str]:
+def stage_args(stage: Stage, forward: list[str], skip_smoke: bool, parallel: bool = True) -> list[str]:
     args = ["--no-prompt", *forward]
     if skip_smoke and stage.number == 3 and "--no-smoke" not in args:
         args.append("--no-smoke")
+    if stage.number == 2 and "--parallel" not in args and "--no-parallel" not in args:
+        args.append("--parallel" if parallel else "--no-parallel")
     return args

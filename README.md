@@ -6,7 +6,7 @@ Bash scripts that build a Windows lab on a Linux host from a Microsoft lab ZIP y
 
 - **Three servers.** A domain controller, a Configuration Manager server, and a gateway. They share an internal network. The gateway also has NAT, so the lab can reach the Internet.
 - **Six stages.** Extract the archive, convert the Hyper-V disks, create the virtual machines, write the lab account notes, start the machines in order, then check that cleanup will not delete the lab by accident.
-- **One screen.** `./scripts/lab.sh` opens a Python menu. Press `1`–`6` for one stage, `a` to run whatever is left, `s` to change settings, `c` to reset, or `q` to leave. The stage scripts stay Bash.
+- **One screen.** `./scripts/lab.sh` opens a Python menu. Each stage, Run all, Settings, Reset, and Quit are buttons. The keys `1`–`6`, `a`, `s`, `c`, and `q` still do the same things. The stage scripts stay Bash.
 - **It picks up where it stopped.** A finished step is skipped until you reset or pass `--force`. Reset removes this lab only. The ZIP and any other virtual machines on the host stay.
 - **Platforms**
   - ✅ VirtualBox
@@ -54,7 +54,7 @@ Client VMs (domain-joined and workgroup Windows 11 machines built from `WindowsP
 | `c` | Reset this lab, after you confirm |
 | `q` | Leave the menu |
 
-The screen shows the current settings, a progress bar for each stage, and the live log. `s` opens a form and writes `config/lab.env`. A blank password keeps the current one, and the password is never shown. While a stage is running, the settings stay as they were when the stage started. A blocked stage is refused until the stage it depends on has passed. The same lines are appended to `tmp/lab.log` under the destination (default `/virtualmachines/tmp/lab.log`). That file stays when you quit and when you reset the lab. Interrupt a running stage and the menu comes back; the stage's marker is left unset, so the next run retries it.
+The screen shows the current settings, a progress bar for each stage, a Parallel disks checkbox, buttons for each stage, Run all, settings, reset, and quit, and the live log. Parallel disks is on unless you turn it off. It converts independent server disks at the same time. The machines still boot one after another. `s` opens a form and writes `config/lab.env`. A blank password keeps the current one, and the password is never shown. While a stage is running, the settings stay as they were when the stage started. A blocked stage is refused until the stage it depends on has passed. The same lines are appended to `tmp/lab.log` under the destination (default `/virtualmachines/tmp/lab.log`). That file stays when you quit and when you reset the lab. Interrupt a running stage and the menu comes back; the stage's marker is left unset, so the next run retries it.
 
 From a shell without a terminal, `./scripts/lab.sh` prints the checklist and exits 0 only when every marker is present.
 
@@ -94,7 +94,7 @@ Finished steps record a timestamp under `TMP_DIR/.markers`. The next run skips a
 | `qemu-img` | Convert VHDX to the hypervisor disk format |
 | `dotnet` | Build `tools/VhdxFlatten` and `tools/HiveSet` |
 | `VBoxManage` | The VirtualBox backend |
-| `qemu-nbd`, `ntfs-3g` | Mount a guest disk to plant Guest Additions. Stages 3 and 5 ask for sudo once for this mount |
+| `qemu-nbd`, `ntfs-3g` | Mount a guest disk to plant Guest Additions. The menu asks for sudo once, before a run that needs this mount |
 | `python3`, Textual | The menu. Stage scripts stay Bash. Install Textual with the venv command above |
 
 Large media stays under the destination, default `/virtualmachines`. It does not go into this git repository and it does not need to go under your home directory.
@@ -159,7 +159,7 @@ On VirtualBox each VM is registered under `VM_ROOT`, given the memory and CPU co
 
 If the VM already exists and its disk is attached, creation is skipped. `--force` unregisters it and creates it again. If the VM exists without that disk, the disk is attached and creation is not repeated.
 
-Stage 3 on its own boots HYD-GW1 headless after the VMs exist. Before that boot, the VirtualBox backend mounts the new disk and plants Guest Additions. A full run (`a` or `all`) skips that boot. Stage 5 plants the additions on each powered-off server and starts the lab, so the gateway is not booted twice. Mounting uses `qemu-nbd`. A full run asks for the sudo password once at the start, before extract and convert, and a stage 3 or stage 5 run on its own asks at the start of that stage. The password is not stored. A root helper then accepts only the disk-mount commands, and the sudo ticket is left to expire on its own. Reading the Guest Additions ISO and writing the offline registry do not need sudo.
+Stage 3 on its own boots HYD-GW1 headless after the VMs exist. Before that boot, the VirtualBox backend mounts the new disk and plants Guest Additions. A full run (`a` or `all`) skips that boot. Stage 5 plants the additions on each powered-off server and starts the lab, so the gateway is not booted twice. Mounting uses `qemu-nbd`. When a run includes a disk mount, the menu asks for the administrator password once before anything starts. The password is sent only to sudo, then dropped. It is not stored. A root helper then accepts only the disk-mount commands for the rest of that run. Reading the Guest Additions ISO and writing the offline registry do not need sudo.
 
 The plant is a copy of the installer and `install-guest-additions.ps1` under `C:\Windows\Temp\vbox-ga` on the guest, plus a one-time autologon of `LabAdmin` and a RunOnce entry that runs the installer. The installer adds the VirtualBox publisher certificate, runs `VBoxWindowsAdditions-amd64.exe` silently, clears the stored password, and reboots. The script then waits until VirtualBox reports the additions service (up to 30 minutes by default). A reboot during that wait is expected. When the service reports in, the script turns on auto-resize of the guest display, the shared clipboard, and drag-and-drop. When stage 3 does boot a VM, that VM is HYD-GW1, and it is powered off after the additions service reports in.
 
