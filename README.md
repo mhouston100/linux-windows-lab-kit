@@ -4,39 +4,31 @@ NOTE: This was written almost entirely by Cursor. I didn't really want to make t
 
 Bash scripts that build a Windows lab on a Linux host from a Microsoft lab ZIP you already have. You supply the archive and the licenses. The repository holds the orchestration only.
 
-- **Three servers.** A domain controller, a Configuration Manager server, and a gateway. They share an internal network. The gateway also has NAT, so the lab can reach the Internet.
+- **Three servers.** A domain controller, a Configuration Manager server, and a gateway. They share a lab LAN. The gateway also has a path to the Internet.
 - **Six stages.** Extract the archive, convert the Hyper-V disks, create the virtual machines, write the lab account notes, start the machines in order, then check that cleanup will not delete the lab by accident.
 - **One screen.** `./scripts/lab.sh` opens a Python menu. Pick the hypervisor, check the settings, then Run all or Run next. Reset and Quit are there too. The keys `a`, `n`, `c`, and `q` do the same things. The stage scripts stay Bash.
-- **It picks up where it stopped.** A finished step is skipped until you reset or pass `--force`. Reset removes this lab only. The ZIP and any other virtual machines on the host stay.
+- **It picks up where it stopped.** A finished step is skipped until you reset or pass `--force`. Reset removes this lab only. The ZIP and any other virtual machines stay.
 - **Platforms**
-  - ✅ VirtualBox
+  - [VirtualBox](docs/virtualbox.md) — the backend that has built this lab
+  - [Proxmox](docs/proxmox.md) — API create, start, and stop. Not yet run on a live node. The guest agent is not planted in the disk yet
   - libvirt — pending
-  - Proxmox — pending
   - VMware Workstation — pending
-
-## Operator guide
-
-This repository builds a Windows lab on a Linux host from a Microsoft lab archive you already have. You point the scripts at that ZIP. They extract it, turn the Hyper-V disks into disks the hypervisor can boot, create the server virtual machines, and start them in a safe order.
 
 The project is independent. It is not affiliated with, endorsed by, or redistributed by Microsoft. You supply the lab ZIP and any licenses the software inside it requires. This repository contains orchestration, templates, and two small .NET tools. It does not contain Windows media, product keys, or passwords.
 
-The hypervisor in use today is VirtualBox. `HYPERVISOR` in `config/lab.env` selects the backend. Shared stages live in `scripts/`. Anything that talks to VirtualBox lives in `scripts/hypervisors/virtualbox/` and `config/hypervisors/virtualbox/`. A later backend (VMware Workstation, libvirt, Proxmox, or another) is a new directory beside that one, with the same hooks. Those backends are not written yet.
-
-`docs/SPEC.md` is the short design note. The sections below are the operator guide.
+`HYPERVISOR` in `config/lab.env` selects the backend. Shared stages live in `scripts/`. Each backend is a directory under `scripts/hypervisors/` and `config/hypervisors/`. `docs/SPEC.md` is the short design note.
 
 ## What the lab is
 
 The archive this kit was written against is the Windows 11 25H2 evaluation lab (`Win11_25H2_Lab.zip`, about 32 GB). The scripts follow the lab shape described in that kit's setup guide, restated here in our own words.
 
-Three server virtual machines are created:
-
 | Name | Role | Memory | CPUs | Networks |
 |------|------|--------|------|----------|
 | HYD-DC1 | Active Directory, DNS, DHCP, Certificate Services | 4 GB | 2 | CorpNet |
 | HYD-CM1 | Configuration Manager, SQL Server, WSUS, WDS, ADK | 8 GB | 4 | CorpNet |
-| HYD-GW1 | Remote Access, the lab's path to the Internet | 2 GB | 2 | CorpNet and NAT |
+| HYD-GW1 | Remote Access, the lab's path to the Internet | 2 GB | 2 | CorpNet and Internet |
 
-CorpNet is the lab LAN. On VirtualBox it is an internal network named `HYD-CorpNet`. Only the gateway has a second adapter, attached to NAT, so the lab can reach the Internet without putting every VM on the host network.
+CorpNet is the lab LAN. Only the gateway has a second adapter, so the lab can reach the Internet. How those two networks are attached depends on the hypervisor. See [VirtualBox](docs/virtualbox.md) or [Proxmox](docs/proxmox.md).
 
 The domain, account, and network names come from configuration. The defaults are domain `Corp`, user `LabAdmin`, prefix `HYD`, and network `CorpNet`. The password is whatever you set in `config/lab.env`. The scripts never print it and the file is gitignored.
 
@@ -53,7 +45,9 @@ Client VMs (domain-joined and workgroup Windows 11 machines built from `WindowsP
 | `c` | Reset this lab, after you confirm |
 | `q` | Leave the menu |
 
-The screen is a stack of titled boxes. Hypervisor choice is first, with VirtualBox in the first spot. The next box is that platform's settings, including the VirtualBox VM directory, then the lab settings: kit, work directory, domain, account, password, and Parallel disks. Fields you can change are text boxes. Fields you cannot change are plain text. Parallel disks is on unless you turn it off. It converts independent server disks at the same time. The machines still boot one after another. Leaving a field writes `config/lab.env`. A blank password keeps the current one, and the password is never shown. Progress for each stage stays on the screen, with Run all, Run next, Reset, and Quit underneath, then the live log. While a stage is running, the settings stay as they were when the stage started. The same lines are appended to `tmp/lab.log` under the work directory (default `/virtualmachines/tmp/lab.log`). That file stays when you quit and when you reset the lab. Interrupt a running stage and the menu comes back; the stage's marker is left unset, so the next run retries it.
+The screen is a stack of titled boxes. Hypervisor choice is first, with VirtualBox in the first spot. The next box is that platform's settings. Under it are the lab settings: kit, work directory, domain, account, password, and Parallel disks. Fields you can change are text boxes. Fields you cannot change are plain text. Parallel disks is on unless you turn it off. It converts independent server disks at the same time. The machines still boot one after another. Leaving a field writes `config/lab.env`. A blank password keeps the current one, and the password is never shown. Progress for each stage stays on the screen, with Run all, Run next, Reset, and Quit underneath, then the live log. While a stage is running, the settings stay as they were when the stage started. The same lines are appended to `tmp/lab.log` under the work directory (default `/virtualmachines/tmp/lab.log`). That file stays when you quit and when you reset the lab. Interrupt a running stage and the menu comes back; the stage's marker is left unset, so the next run retries it.
+
+The menu asks for an administrator password only when the selected backend mounts a guest disk. VirtualBox does that for Guest Additions. Proxmox does not.
 
 From a shell without a terminal, `./scripts/lab.sh` prints the checklist and exits 0 only when every marker is present.
 
@@ -77,8 +71,8 @@ Finished steps record a timestamp under `TMP_DIR/.markers`. The next run skips a
    cp config/lab.env.example config/lab.env
    ```
 
-2. Put the lab ZIP somewhere with a lot of free space. The default path is `/virtualmachines/Kit/Original/Win11_25H2_Lab.zip`. Extraction, the flattened disks, and the VM copies need substantially more than the 32 GB archive.
-3. Install the host tools, then the menu's Python library. The scripts do not install packages for you.
+2. Put the lab ZIP somewhere with a lot of free space. The default path is `/virtualmachines/Kit/Original/Win11_25H2_Lab.zip`. Extraction and the flattened disks need substantially more than the 32 GB archive.
+3. Install the host tools, then the menu's Python library. The scripts do not install packages for you. Backend tools are listed in the hypervisor guide.
 
    ```bash
    ./scripts/check-prereqs.sh
@@ -92,42 +86,41 @@ Finished steps record a timestamp under `TMP_DIR/.markers`. The next run skips a
 | `zpaq`, or `wine` | Unpack the ZPAQ payload. Native `zpaq` is used when it is installed; otherwise Wine runs the `zpaq.exe` shipped inside the kit. Mono is not required |
 | `qemu-img` | Convert VHDX to the hypervisor disk format |
 | `dotnet` | Build `tools/VhdxFlatten` and `tools/HiveSet` |
-| `VBoxManage` | The VirtualBox backend |
-| `qemu-nbd`, `ntfs-3g` | Mount a guest disk to plant Guest Additions. The menu asks for sudo once, before a run that needs this mount |
 | `python3`, Textual | The menu. Stage scripts stay Bash. Install Textual with the venv command above |
 
-Large media stays under the work directory and the VM directory, both `/virtualmachines` unless you change them. It does not go into this git repository and it does not need to go under your home directory.
+Large media stays under the work directory, default `/virtualmachines`. It does not go into this git repository and it does not need to go under your home directory.
 
 | Path | Role |
 |------|------|
 | `/virtualmachines/Kit/Original/` | The ZIP you downloaded. The scripts never delete it |
 | `/virtualmachines/source` | Immediate unzip of the ZIP |
 | `/virtualmachines/tmp` | ZPAQ unpack, setup resources, inventory, converted disks, identity files, markers, `lab.log` |
-| `/virtualmachines/HYD-*` | Virtual machine folders and the disks those VMs boot |
 
-`--kit` selects the ZIP. `--dest` sets both the work directory and the VM directory for that run: `source/` and `tmp/` are created under it, and the virtual machines go there too. The menu can save those two directories separately. Flags override `config/lab.env`. A phase script run on its own still asks for the paths; Enter accepts the default. `--no-prompt` or `LAB_NONINTERACTIVE=1` skips those prompts.
+`--kit` selects the ZIP. `--dest` sets both the work directory and the VM directory for that one command. The menu can save those two directories separately. Flags override `config/lab.env`. A phase script run on its own still asks for the paths; Enter accepts the default. `--no-prompt` or `LAB_NONINTERACTIVE=1` skips those prompts. Proxmox keeps the work directory local and creates the guests on the node. It does not use the VM directory for machine folders.
 
 ## Configuration
 
-`config/lab.env.example` lists every setting. `config/lab.env` is the local copy.
+`config/lab.env.example` lists every setting. `config/lab.env` is the local copy. Hypervisor settings are on the [VirtualBox](docs/virtualbox.md) and [Proxmox](docs/proxmox.md) pages.
 
 | Setting | Default | Meaning |
 |---------|---------|---------|
 | `LAB_WORK_DIR` | `/virtualmachines` | Unzip, converted disks, and the log. `source/` and `tmp/` are created under it |
 | `SOURCE_DIR` | `/virtualmachines/source` | Immediate unzip |
 | `TMP_DIR` | `/virtualmachines/tmp` | Converted disks, markers, and the log |
-| `VM_ROOT` | `/virtualmachines` | VirtualBox machine folders and final disks |
 | `LAB_ZIP_PATH` | the Kit/Original ZIP | Archive for this run |
 | `HYPERVISOR` | `virtualbox` | Backend directory name |
 | `LAB_PREFIX` | `HYD` | VM name prefix and network prefix |
 | `LAB_NETWORK_NAME` | `CorpNet` | Logical LAN name |
 | `LAB_DOMAIN` | `Corp` | Domain used in notes and the one-time logon |
 | `LAB_ADMIN_USER` | `LabAdmin` | Account named in the notes and the one-time logon |
-| `LAB_ADMIN_PASSWORD` | empty | Required for client unattend XML and the Guest Additions logon. Set it locally |
+| `LAB_ADMIN_PASSWORD` | empty | Required for client unattend XML and the guest logon. Set it locally |
+| `LAB_PARALLEL` | `1` | Convert independent disks together. `0` converts one at a time |
 
-Shared lab shape is `config/topology.tsv`: name, role, memory, CPUs, disk, and NICs. VirtualBox guest OS ids are separate, in `config/hypervisors/virtualbox/guests.tsv`, so a different hypervisor can map the same three servers to its own guest types. Boot order and the pause after each start are `config/boot-order.tsv`: DC, then CM, then the gateway, with waits of 90, 60, and 30 seconds.
+Shared lab shape is `config/topology.tsv`: name, role, memory, CPUs, disk, and NICs. Guest OS ids live under `config/hypervisors/<name>/`, so each backend can map the same three servers to its own types. Boot order and the pause after each start are `config/boot-order.tsv`: DC, then CM, then the gateway, with waits of 90, 60, and 30 seconds.
 
-## Stage 1 — Extract and organize
+## Stages
+
+### Stage 1 — Extract and organize
 
 The ZIP is only an input. Phase 1 checks prerequisites, then:
 
@@ -138,47 +131,35 @@ The ZIP is only an input. Phase 1 checks prerequisites, then:
 
 `./scripts/verify-phase1.sh` checks that layout and writes the phase checkpoint. You can run one extract step with `./scripts/extract-lab.sh --step zip|zpaq|setup|organize`.
 
-## Stage 2 — Convert disks
+### Stage 2 — Convert disks
 
 The kit's disks are Hyper-V VHDX, and several of them are differencing disks whose parent is `ServerParent.vhdx`. `qemu-img` cannot open those differencing files on Linux.
 
 1. `scripts/inventory-disks.sh` records each disk and its parent.
 2. `tools/VhdxFlatten` walks a differencing chain and writes a flat VHDX. A message that the first open could not find a parent is the tool switching to an explicit parent path. Small checkpoint AVHDX files are skipped on purpose.
-3. `qemu-img` converts the flat image to the backend's disk format. VirtualBox uses VDI. `--format vdi|vmdk` overrides that. Each disk logs its start and how many seconds it took.
-4. The backend checks that it can open the result. For VirtualBox that check is `VBoxManage showmediuminfo`.
+3. `qemu-img` converts the flat image to the backend's disk format. VirtualBox uses VDI. Proxmox uses qcow2. `--format vdi|vmdk|qcow2` overrides that. Each disk logs its start and how many seconds it took.
+4. The backend checks that it can open the result.
 
-`VhdxFlatten` is built only when its Release binary is missing or older than the tool's sources.
+`VhdxFlatten` is built only when its Release binary is missing or older than the tool's sources. Converted files land in `tmp/convert`. Parallel disks runs up to three independent conversions at once. Parents finish before children.
 
-Converted files land in `tmp/convert`, including `HYD-DC1.vdi`, `HYD-CM1.vdi`, and `HYD-GW1.vdi`. Those files stay there. The VM disks in stage 3 are copies.
+### Stage 3 — Create the virtual machines
 
-## Stage 3 — Create the virtual machines
+`scripts/create-lab-vms.sh` loads the backend and creates the servers listed in the topology. Run next boots the gateway briefly, then powers it off. Run all skips that boot. Disk placement, firmware, and what the smoke boot waits for are in the hypervisor guide.
 
-`scripts/create-lab-vms.sh` loads the backend and creates the servers listed in the topology.
-
-On VirtualBox each VM is registered under `VM_ROOT`, given the memory and CPU count from the topology, set to EFI, and attached to CorpNet. HYD-GW1 also receives a NAT adapter. The converted VDI is copied onto the VM folder with `cp --reflink=always` and then given a new disk UUID. A hardlink would keep the original UUID, and VirtualBox refuses to register the same UUID at two paths. The copy is cheap on btrfs because of the reflink.
-
-If the VM already exists and its disk is attached, creation is skipped. `--force` unregisters it and creates it again. If the VM exists without that disk, the disk is attached and creation is not repeated.
-
-Stage 3 on its own boots HYD-GW1 headless after the VMs exist. Before that boot, the VirtualBox backend mounts the new disk and plants Guest Additions. A full run (`a` or `all`) skips that boot. Stage 5 plants the additions on each powered-off server and starts the lab, so the gateway is not booted twice. Mounting uses `qemu-nbd`. When a run includes a disk mount, the menu asks for the administrator password once before anything starts. The password is sent only to sudo, then dropped. It is not stored. A root helper then accepts only the disk-mount commands for the rest of that run. Reading the Guest Additions ISO and writing the offline registry do not need sudo.
-
-The plant is a copy of the installer and `install-guest-additions.ps1` under `C:\Windows\Temp\vbox-ga` on the guest, plus a one-time autologon of `LabAdmin` and a RunOnce entry that runs the installer. The installer adds the VirtualBox publisher certificate, runs `VBoxWindowsAdditions-amd64.exe` silently, clears the stored password, and reboots. The script then waits until VirtualBox reports the additions service (up to 30 minutes by default). A reboot during that wait is expected. When the service reports in, the script turns on auto-resize of the guest display, the shared clipboard, and drag-and-drop. When stage 3 does boot a VM, that VM is HYD-GW1, and it is powered off after the additions service reports in.
-
-The registry writer is `tools/HiveSet`. It uses the MIT-licensed DiscUtils packages stored in `third_party/nuget`, so that build does not download them. The .NET SDK may still contact NuGet for its own targeting packs.
-
-## Stage 4 — Identity templates
+### Stage 4 — Identity templates
 
 This stage writes operator files. It does not rebuild the servers.
 
 With `LAB_ADMIN_PASSWORD` set, `scripts/prepare-identity.sh` renders:
 
 - `tmp/identity/credentials.md` — where the account is recorded, with the password length rather than the password
-- `tmp/identity/first-boot-notes.md` — start order and the Guest Additions note
+- `tmp/identity/first-boot-notes.md` — start order and a guest-tools note
 - `tmp/identity/unattend/HYD-CLIENT*-oobe.xml` — client OOBE stubs for a later step
 - a VM description on each server (role, domain, account name, network). The password is not part of the description
 
-The client unattend XML is not applied to a disk yet. Server disks receive the Guest Additions logon from stage 3, not this unattend file.
+The client unattend XML is not applied to a disk yet.
 
-## Stage 5 — Start and stop
+### Stage 5 — Start and stop
 
 `scripts/lab-ctl.sh` is the runtime control for the selected hypervisor.
 
@@ -190,22 +171,15 @@ The client unattend XML is not applied to a disk yet. Server disks receive the G
 ./scripts/lab-ctl.sh health
 ```
 
-`start` plants Guest Additions on any server that is powered off, then boots it. The settle time in `boot-order.tsv` (90s for the domain controller, then 60s, then 30s) starts when that VM starts, and it runs while the additions service is reporting in. The next VM starts once the additions are up and that settle time has passed. `--no-wait` skips the settle time. Stop walks the boot order in reverse. `health` checks that each lab VM is registered, has its disk, and is on CorpNet.
+`start` boots in the order in `boot-order.tsv` and waits for that backend's guest service. The settle time (90s for the domain controller, then 60s, then 30s) starts when that VM starts. `--no-wait` skips the settle time. It does not skip the guest-service wait. Stop walks the boot order in reverse. `health` checks that each lab VM is registered, has its disk, and is on CorpNet.
 
 Phase 5 runs health, a start with `--no-wait`, and a stop, then checks that the three servers are powered off.
 
-## Stage 6 — Cleanup safety, and reclaiming space
+### Stage 6 — Cleanup safety, and reset
 
 Phase 6 does not delete the lab. It checks that `cleanup-lab.sh` refuses to run without `--yes`, refuses to run when nothing is selected, refuses `--reset` without `--yes`, and that the three lab VMs are still present.
 
-Press `c` in the menu to reset the lab. The menu asks you to confirm, then deletes:
-
-- every VM named by an active row in `config/topology.tsv`, after powering it off
-- that VM's folder under the VM directory
-- `source/`, and everything under `tmp/` except `lab.log` (markers and the Guest Additions cache are removed)
-- VirtualBox media still registered under those paths
-
-The kit ZIP stays. The VM directory itself stays, so other virtual machines on the host stay. A name is removed only when it is in the topology and starts with `LAB_PREFIX`. The same reset from a shell is:
+Press `c` in the menu to reset the lab. The menu asks you to confirm, then deletes every VM named by an active row in `config/topology.tsv` after powering it off, plus `source/`, and everything under `tmp/` except `lab.log`. The kit ZIP stays. A name is removed only when it is in the topology and starts with `LAB_PREFIX`. Folders, registered media, and remote disks follow the hypervisor guide.
 
 ```bash
 ./scripts/cleanup-lab.sh --reset --yes
@@ -215,24 +189,6 @@ On an interactive terminal that command also asks you to type `YES`. `a` does no
 
 `--all-work` still means the VMs plus the scratch trees under `tmp/`, and it leaves `source/` in place. Other flags are `--vms`, `--tmp`, `--convert`, and `--identity`.
 
-## Hypervisor backends
-
-Shared code asks the backend to do hypervisor work. It does not call `VBoxManage` itself. The VirtualBox module implements:
-
-| Hook | VirtualBox behavior |
-|------|---------------------|
-| `hv_check_prereqs` | Require `VBoxManage` |
-| `hv_disk_format` | `vdi` |
-| `hv_verify_disk` | Open the converted medium |
-| `hv_verify_create` | VM registered, SATA disk attached, CorpNet on nic1, NAT on the gateway |
-| `hv_vm_exists`, `hv_vm_state`, `hv_delete_vm` | Query and unregister |
-| `hv_close_lab_media` | Unregister disks, ISOs, and floppies under the lab directories |
-| `hv_set_description`, `hv_description_ok` | VM description |
-| `hv_stage_needs_privileges` | Stages 3 and 5, for the disk mount |
-| `hv_prepare_privileged`, `hv_finish_privileged` | Ask for sudo once and run the mount helper |
-
-`scripts/create-lab-vms.sh` and `scripts/lab-ctl.sh` stay the public commands. They load `scripts/hypervisors/$HYPERVISOR/load.sh` and run that backend's create and control scripts.
-
 ## Repository layout
 
 ```text
@@ -240,17 +196,23 @@ config/lab.env.example          # copy to lab.env; lab.env is gitignored
 config/topology.tsv             # shared VM shape
 config/boot-order.tsv           # start order and pauses
 config/hypervisors/virtualbox/  # VirtualBox guest OS ids
+config/hypervisors/proxmox/     # Proxmox guest ids and VMIDs
 scripts/lab.sh                  # starts the Python menu
 python/labkit/                  # Textual menu, settings, stage runner
 scripts/phase1.sh … phase6.sh   # one Bash stage each
 scripts/lib/                    # config, checklist, hypervisor loader
 scripts/hypervisors/virtualbox/ # VirtualBox create, control, Guest Additions
+scripts/hypervisors/proxmox/    # Proxmox API create, control, disk import
 templates/                      # identity notes and client unattend
 tools/VhdxFlatten/              # differencing VHDX flattener
 tools/HiveSet/                  # offline registry writer
 third_party/nuget/              # DiscUtils and Registry packages, MIT
 docs/SPEC.md                    # short spec
+docs/virtualbox.md              # VirtualBox operator guide
+docs/proxmox.md                 # Proxmox operator guide
 ```
+
+`scripts/create-lab-vms.sh` and `scripts/lab-ctl.sh` stay the public commands. They load `scripts/hypervisors/$HYPERVISOR/load.sh` and run that backend's create and control scripts.
 
 Build output under `tools/**/bin` and `tools/**/obj` is gitignored. So are `config/lab.env`, archives, and disk images.
 
@@ -262,4 +224,4 @@ The menu uses [Textual](https://textual.textualize.io/), which is MIT licensed a
 
 ## What is not in git
 
-Lab ZIPs, ZPAQ archives, VHDX and VDI files, `config/lab.env`, and tool build output. Commit those and you would be publishing Microsoft media or a password.
+Lab ZIPs, ZPAQ archives, VHDX and converted disks, `config/lab.env`, and tool build output. Commit those and you would be publishing Microsoft media or a password.

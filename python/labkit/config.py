@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shlex
 import stat
 import subprocess
@@ -28,6 +29,15 @@ class LabConfig:
     lab_domain: str
     parallel: bool = True
     work_dir: Path = field(default_factory=lambda: Path("/virtualmachines"))
+    guest_additions_iso: str = ""
+    pve_api_host: str = ""
+    pve_tls_fingerprint: str = ""
+    pve_node: str = ""
+    pve_storage: str = ""
+    pve_bridge: str = ""
+    pve_internet_bridge: str = ""
+    pve_token_id: str = ""
+    pve_token_secret: str = ""
 
     @property
     def markers_dir(self) -> Path:
@@ -51,11 +61,19 @@ class LabConfig:
 
     def summary_lines(self) -> list[str]:
         password = "set" if self.password_set else "not set"
-        where = "local" if self.hypervisor == "virtualbox" else self.hypervisor
+        if self.hypervisor == "proxmox":
+            where = self.pve_api_host or "API host not set"
+            machines = self.pve_node or "node not set"
+        elif self.hypervisor == "virtualbox":
+            where = "local"
+            machines = str(self.vm_root)
+        else:
+            where = self.hypervisor
+            machines = str(self.vm_root)
         return [
             f"Kit      {self.lab_zip_path}",
             f"Work     {self.work_dir}",
-            f"VMs      {self.vm_root}",
+            f"VMs      {machines}",
             f"Account  {self.lab_domain} / {self.lab_admin_user}  password {password}",
             f"Hypervisor  {self.hypervisor}  {where}",
         ]
@@ -125,6 +143,15 @@ def load_config(root: Path, kit: str | None = None, dest: str | None = None) -> 
         lab_domain=values.get("LAB_DOMAIN") or "Corp",
         parallel=_flag(values.get("LAB_PARALLEL"), default=True),
         work_dir=work_dir,
+        guest_additions_iso=values.get("VBOX_GUEST_ADDITIONS_ISO") or guest_additions_iso(),
+        pve_api_host=values.get("PVE_API_HOST") or "",
+        pve_tls_fingerprint=values.get("PVE_TLS_FINGERPRINT") or "",
+        pve_node=values.get("PVE_NODE") or "",
+        pve_storage=values.get("PVE_STORAGE") or "",
+        pve_bridge=values.get("PVE_BRIDGE") or "",
+        pve_internet_bridge=values.get("PVE_INTERNET_BRIDGE") or "",
+        pve_token_id=values.get("PVE_TOKEN_ID") or "",
+        pve_token_secret=values.get("PVE_TOKEN_SECRET") or "",
     )
 
 
@@ -173,6 +200,8 @@ class HypervisorField:
     label: str
     value: str
     editable: bool
+    secret: bool = False
+    placeholder: str = ""
 
 
 def guest_additions_iso() -> str:
@@ -219,12 +248,109 @@ def _work_dir(values: dict[str, str], vm_root: Path) -> Path:
     return vm_root
 
 
-def hypervisor_fields(name: str, vm_dir: str = "") -> list[HypervisorField]:
+def hypervisor_fields(
+    name: str,
+    vm_dir: str = "",
+    ga_iso: str | None = None,
+    proxmox: dict[str, str] | None = None,
+) -> list[HypervisorField]:
     """Settings for one backend. Locked fields stay visible."""
     if name == "virtualbox":
+        iso = guest_additions_iso() if ga_iso is None else ga_iso
         return [
             HypervisorField("disk-format", "Disk format", "VDI", False),
-            HypervisorField("ga-iso", "Guest Additions ISO", guest_additions_iso(), False),
+            HypervisorField("ga-iso", "Guest Additions ISO", iso, True),
             HypervisorField("vm-dir", "VM directory", vm_dir, True),
         ]
+    if name == "proxmox":
+        values = proxmox or {}
+        return [
+            HypervisorField("disk-format", "Disk format", "qcow2", False),
+            HypervisorField("api-host", "API host", values.get("api_host", ""), True, placeholder="host:8006"),
+            HypervisorField(
+                "fingerprint",
+                "TLS fingerprint",
+                values.get("tls_fingerprint", ""),
+                True,
+                placeholder="SHA256 from the node certificate",
+            ),
+            HypervisorField("node", "Node", values.get("node", ""), True, placeholder="pve"),
+            HypervisorField("storage", "Storage", values.get("storage", ""), True, placeholder="local"),
+            HypervisorField("bridge", "CorpNet bridge", values.get("bridge", ""), True, placeholder="vmbr0"),
+            HypervisorField(
+                "internet-bridge",
+                "Internet bridge",
+                values.get("internet_bridge", ""),
+                True,
+                placeholder="bridge with a route out",
+            ),
+            HypervisorField("token-id", "Token id", values.get("token_id", ""), True, placeholder="user@pve!token"),
+            HypervisorField(
+                "token-secret",
+                "Token secret",
+                "",
+                True,
+                secret=True,
+                placeholder="Leave blank to keep the current token",
+            ),
+        ]
     return []
+
+
+_PVE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,62}")
+_PVE_TOKEN = re.compile(r"[A-Za-z0-9._-]{1,64}@[A-Za-z0-9._-]{1,32}![A-Za-z0-9._-]{1,64}")
+
+
+def proxmox_host_ok(value: str) -> bool:
+    if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9.-]{0,252})(?::[0-9]{1,5})?", value):
+        return False
+    if ":" in value:
+        port = int(value.rsplit(":", 1)[1])
+        return 1 <= port <= 65535
+    return True
+
+
+def proxmox_name_ok(value: str) -> bool:
+    return _PVE_NAME.fullmatch(value) is not None
+
+
+def proxmox_token_ok(value: str) -> bool:
+    return _PVE_TOKEN.fullmatch(value) is not None
+
+
+def normalize_fingerprint(value: str) -> str | None:
+    text = value.strip().upper()
+    if text.startswith("SHA256:"):
+        text = text[7:]
+    text = text.replace(":", "").replace(" ", "")
+    if len(text) != 64 or any(char not in "0123456789ABCDEF" for char in text):
+        return None
+    return ":".join(text[index:index + 2] for index in range(0, 64, 2))
+
+
+def proxmox_secret_ok(value: str) -> bool:
+    if not value or len(value) > 256:
+        return False
+    return all(32 < ord(char) < 127 and char not in "\"'\\$`#" for char in value)
+
+
+def missing_proxmox_settings(config: LabConfig) -> list[str]:
+    """Labels for Proxmox settings a create or start still needs."""
+    missing: list[str] = []
+    if not proxmox_host_ok(config.pve_api_host):
+        missing.append("API host")
+    if normalize_fingerprint(config.pve_tls_fingerprint) is None:
+        missing.append("TLS fingerprint")
+    if not proxmox_name_ok(config.pve_node):
+        missing.append("node")
+    if not proxmox_name_ok(config.pve_storage):
+        missing.append("storage")
+    if not proxmox_name_ok(config.pve_bridge):
+        missing.append("CorpNet bridge")
+    if not proxmox_name_ok(config.pve_internet_bridge):
+        missing.append("Internet bridge")
+    if not proxmox_token_ok(config.pve_token_id):
+        missing.append("token id")
+    if not proxmox_secret_ok(config.pve_token_secret):
+        missing.append("token secret")
+    return missing

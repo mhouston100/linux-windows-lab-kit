@@ -63,6 +63,13 @@ ga_hive_record() {
 
 ga_iso_path() {
   local cand listed=""
+  if [[ -n "${VBOX_GUEST_ADDITIONS_ISO:-}" ]]; then
+    if [[ -f "${VBOX_GUEST_ADDITIONS_ISO}" ]]; then
+      printf '%s\n' "${VBOX_GUEST_ADDITIONS_ISO}"
+      return 0
+    fi
+    return 1
+  fi
   if command -v VBoxManage >/dev/null 2>&1; then
     listed="$(VBoxManage list systemproperties 2>/dev/null \
       | sed -n 's/^Default Guest Additions ISO:[[:space:]]*//p' \

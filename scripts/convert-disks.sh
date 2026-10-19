@@ -16,7 +16,7 @@ MAX_JOBS=3
 
 usage() {
   cat <<'EOF'
-Usage: convert-disks.sh [--no-prompt] [--force] [--format vdi|vmdk] [--parallel|--no-parallel]
+Usage: convert-disks.sh [--no-prompt] [--force] [--format vdi|vmdk|qcow2] [--parallel|--no-parallel]
 
 Pipeline:
   1) Inventory disks (if needed)
@@ -24,7 +24,7 @@ Pipeline:
   3) For differencing VHDX: VhdxFlatten -> flat VHDX, then qemu-img
   4) Write CONVERT_DIR/conversion-map.tsv
 
-The disk format defaults to the selected hypervisor (vdi for VirtualBox).
+The disk format defaults to the selected hypervisor (vdi for VirtualBox, qcow2 for Proxmox).
 --format overrides that. qemu-img cannot open Hyper-V differencing VHDX
 (ENOTSUP). Those are flattened with tools/VhdxFlatten (DiscUtils / .NET) first.
 EOF
@@ -46,8 +46,8 @@ done
 
 if [[ "$FORMAT_EXPLICIT" -eq 1 ]]; then
   case "$FORMAT" in
-    vdi|vmdk) ;;
-    *) die "Unsupported format: $FORMAT (use vdi or vmdk)" ;;
+    vdi|vmdk|qcow2) ;;
+    *) die "Unsupported format: $FORMAT (use vdi, vmdk, or qcow2)" ;;
   esac
 fi
 

@@ -210,22 +210,38 @@ lab_reset() {
   [[ -n "${LAB_ZIP_PATH:-}" ]] || die "LAB_ZIP_PATH is unset; refusing to reset"
   lab_refuse_tree "$SOURCE_DIR" "source"
   lab_refuse_tree "$TMP_DIR" "tmp"
-  for name in "${LAB_VM_NAMES[@]}"; do
-    dir="$(lab_vm_folder "$name")"
-    lab_refuse_tree "$dir" "VM folder ${name}"
-    folders+=("$dir")
-  done
+
+  hv_load
+  folders=()
+  if declare -F hv_local_vm_dirs >/dev/null; then
+    while IFS= read -r dir; do
+      [[ -n "$dir" ]] || continue
+      lab_refuse_tree "$dir" "VM folder"
+      folders+=("$dir")
+    done < <(hv_local_vm_dirs)
+  else
+    for name in "${LAB_VM_NAMES[@]}"; do
+      dir="$(lab_vm_folder "$name")"
+      lab_refuse_tree "$dir" "VM folder ${name}"
+      folders+=("$dir")
+    done
+  fi
 
   confirm "reset this lab (VMs ${LAB_VM_NAMES[*]}, ${SOURCE_DIR}, and ${TMP_DIR} except lab.log). The kit ZIP is kept"
   lab_delete_vms
 
-  media_roots=("$SOURCE_DIR" "$TMP_DIR" "${folders[@]}")
+  media_roots=("$SOURCE_DIR" "$TMP_DIR")
+  if [[ ${#folders[@]} -gt 0 ]]; then
+    media_roots+=("${folders[@]}")
+  fi
   declare -F hv_close_lab_media >/dev/null || die "This hypervisor cannot close lab disks"
   hv_close_lab_media "${media_roots[@]}"
 
-  for dir in "${folders[@]}"; do
-    lab_remove_tree "$dir" "VM folder"
-  done
+  if [[ ${#folders[@]} -gt 0 ]]; then
+    for dir in "${folders[@]}"; do
+      lab_remove_tree "$dir" "VM folder"
+    done
+  fi
   lab_remove_tree "$SOURCE_DIR" "source"
   lab_clear_tmp_keep_log
   if [[ -n "${LAB_ZIP_PATH:-}" && -f "$LAB_ZIP_PATH" ]]; then

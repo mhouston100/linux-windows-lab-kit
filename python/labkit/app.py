@@ -17,7 +17,13 @@ from labkit.config import (
     LabConfig,
     hypervisor_fields,
     load_config,
+    missing_proxmox_settings,
+    normalize_fingerprint,
     ordered_hypervisors,
+    proxmox_host_ok,
+    proxmox_name_ok,
+    proxmox_secret_ok,
+    proxmox_token_ok,
     write_keys,
 )
 from labkit.runner import run_script, stage_args
@@ -31,6 +37,8 @@ _GENERAL = ("kit", "work", "domain", "user", "password")
 def _platform_label(name: str) -> str:
     if name == "virtualbox":
         return "VirtualBox"
+    if name == "proxmox":
+        return "Proxmox"
     return name
 
 
@@ -210,7 +218,7 @@ class LabApp(App[int]):
                             variant="primary" if selected else "default",
                         )
             with Vertical(id="hv-settings", classes="panel"):
-                yield from self._hypervisor_rows(hypervisor_fields(self.cfg.hypervisor, str(self.cfg.vm_root)))
+                yield from self._hypervisor_rows(self._hv_fields())
             with Vertical(id="lab-settings", classes="panel"):
                 yield from self._general_row("Kit ZIP", str(self.cfg.lab_zip_path), "kit")
                 yield from self._general_row("Work directory", str(self.cfg.work_dir), "work")
@@ -232,6 +240,22 @@ class LabApp(App[int]):
                 yield Button("Quit (q)", id="quit")
         yield RichLog(id="log", classes="panel", highlight=False, markup=False, wrap=True, max_lines=500)
 
+    def _hv_fields(self) -> list[HypervisorField]:
+        return hypervisor_fields(
+            self.cfg.hypervisor,
+            str(self.cfg.vm_root),
+            self.cfg.guest_additions_iso,
+            {
+                "api_host": self.cfg.pve_api_host,
+                "tls_fingerprint": self.cfg.pve_tls_fingerprint,
+                "node": self.cfg.pve_node,
+                "storage": self.cfg.pve_storage,
+                "bridge": self.cfg.pve_bridge,
+                "internet_bridge": self.cfg.pve_internet_bridge,
+                "token_id": self.cfg.pve_token_id,
+            },
+        )
+
     @staticmethod
     def _general_row(label: str, value: str, field_id: str, password: bool = False) -> ComposeResult:
         placeholder = "Leave blank to keep the current password" if password else ""
@@ -250,8 +274,10 @@ class LabApp(App[int]):
             yield Horizontal(
                 Label(field.label),
                 Input(
-                    value=field.value,
+                    value="" if field.secret else field.value,
                     id=f"hv-{field.key}",
+                    password=field.secret,
+                    placeholder=field.placeholder,
                     disabled=not field.editable,
                     compact=not field.editable,
                     classes=None if field.editable else "locked",
@@ -315,8 +341,92 @@ class LabApp(App[int]):
     def _outside_checkout(self, value: str) -> bool:
         return not value or value in {"/", str(self.cfg.root)}
 
+    def _save_proxmox_text(self, field_id: str, updates: dict[str, str]) -> bool:
+        key, current, invalid, accept = {
+            "hv-api-host": (
+                "PVE_API_HOST",
+                self.cfg.pve_api_host,
+                "API host must be a hostname or address, with an optional port.",
+                proxmox_host_ok,
+            ),
+            "hv-node": (
+                "PVE_NODE",
+                self.cfg.pve_node,
+                "Node must use letters, digits, dots, underscores, or hyphens.",
+                proxmox_name_ok,
+            ),
+            "hv-storage": (
+                "PVE_STORAGE",
+                self.cfg.pve_storage,
+                "Storage must use letters, digits, dots, underscores, or hyphens.",
+                proxmox_name_ok,
+            ),
+            "hv-bridge": (
+                "PVE_BRIDGE",
+                self.cfg.pve_bridge,
+                "CorpNet bridge must use letters, digits, dots, underscores, or hyphens.",
+                proxmox_name_ok,
+            ),
+            "hv-internet-bridge": (
+                "PVE_INTERNET_BRIDGE",
+                self.cfg.pve_internet_bridge,
+                "Internet bridge must use letters, digits, dots, underscores, or hyphens.",
+                proxmox_name_ok,
+            ),
+            "hv-token-id": (
+                "PVE_TOKEN_ID",
+                self.cfg.pve_token_id,
+                "Token id must look like user@pve!token.",
+                proxmox_token_ok,
+            ),
+        }[field_id]
+        widget = self.query_one(f"#{field_id}", Input)
+        value = widget.value.strip()
+        if value == current:
+            return True
+        if not accept(value):
+            self.notify(invalid, severity="warning")
+            widget.value = current
+            return False
+        updates[key] = value
+        return True
+
+    def _save_fingerprint(self, updates: dict[str, str]) -> bool:
+        widget = self.query_one("#hv-fingerprint", Input)
+        raw = widget.value.strip()
+        current = self.cfg.pve_tls_fingerprint
+        if raw == "":
+            if current == "":
+                return True
+            self.notify("TLS fingerprint must be a SHA256 hex string.", severity="warning")
+            widget.value = current
+            return False
+        value = normalize_fingerprint(raw)
+        if value is None:
+            self.notify("TLS fingerprint must be a SHA256 hex string.", severity="warning")
+            widget.value = current
+            return False
+        widget.value = value
+        if value == current:
+            return True
+        updates["PVE_TLS_FINGERPRINT"] = value
+        return True
+
     def _save_field(self, field_id: str) -> bool:
-        if field_id not in _GENERAL and field_id != "hv-vm-dir":
+        if field_id not in _GENERAL and not field_id.startswith("hv-"):
+            return True
+        if field_id.startswith("hv-") and field_id not in {
+            "hv-vm-dir",
+            "hv-ga-iso",
+            "hv-api-host",
+            "hv-fingerprint",
+            "hv-node",
+            "hv-storage",
+            "hv-bridge",
+            "hv-internet-bridge",
+            "hv-token-id",
+            "hv-token-secret",
+        }:
             return True
         updates: dict[str, str] = {}
         if field_id == "kit":
@@ -348,6 +458,39 @@ class LabApp(App[int]):
                 self.query_one("#hv-vm-dir", Input).value = str(self.cfg.vm_root)
                 return False
             updates["VM_ROOT"] = vm_dir
+        elif field_id == "hv-ga-iso":
+            iso = self.query_one("#hv-ga-iso", Input).value.strip()
+            if iso == self.cfg.guest_additions_iso:
+                return True
+            if not iso.lower().endswith(".iso"):
+                self.notify("Choose a Guest Additions .iso file.", severity="warning")
+                self.query_one("#hv-ga-iso", Input).value = self.cfg.guest_additions_iso
+                return False
+            updates["VBOX_GUEST_ADDITIONS_ISO"] = iso
+        elif field_id == "hv-token-secret":
+            secret = self.query_one("#hv-token-secret", Input).value
+            if secret == "":
+                return True
+            if not proxmox_secret_ok(secret):
+                self.notify("The token secret cannot include spaces, quotes, or control characters.", severity="warning")
+                self.query_one("#hv-token-secret", Input).value = ""
+                return False
+            updates["PVE_TOKEN_SECRET"] = secret
+        elif field_id == "hv-fingerprint":
+            if not self._save_fingerprint(updates):
+                return False
+        elif field_id in {
+            "hv-api-host",
+            "hv-node",
+            "hv-storage",
+            "hv-bridge",
+            "hv-internet-bridge",
+            "hv-token-id",
+        }:
+            if not self._save_proxmox_text(field_id, updates):
+                return False
+            if not updates:
+                return True
         elif field_id in {"domain", "user"}:
             value = self.query_one(f"#{field_id}", Input).value.strip()
             current = self.cfg.lab_domain if field_id == "domain" else self.cfg.lab_admin_user
@@ -364,6 +507,8 @@ class LabApp(App[int]):
             if password == "":
                 return True
             updates["LAB_ADMIN_PASSWORD"] = password
+        if not updates:
+            return True
         try:
             write_keys(self.cfg.env_file, self.cfg.root / "config" / "lab.env.example", updates)
         except OSError:
@@ -372,6 +517,8 @@ class LabApp(App[int]):
         self.cfg = load_config(self.cfg.root)
         if field_id == "password":
             self.query_one("#password", Input).value = ""
+        if field_id == "hv-token-secret":
+            self.query_one("#hv-token-secret", Input).value = ""
         self.refresh_stages()
         return True
 
@@ -379,7 +526,18 @@ class LabApp(App[int]):
         saved = True
         fields = list(_GENERAL)
         if self.cfg.hypervisor == "virtualbox":
-            fields.append("hv-vm-dir")
+            fields.extend(("hv-vm-dir", "hv-ga-iso"))
+        elif self.cfg.hypervisor == "proxmox":
+            fields.extend((
+                "hv-api-host",
+                "hv-fingerprint",
+                "hv-node",
+                "hv-storage",
+                "hv-bridge",
+                "hv-internet-bridge",
+                "hv-token-id",
+                "hv-token-secret",
+            ))
         for field_id in fields:
             if not self._save_field(field_id):
                 saved = False
@@ -423,7 +581,7 @@ class LabApp(App[int]):
         box = self.query_one("#hv-settings", Vertical)
         box.border_title = _hypervisor_title(self.cfg.hypervisor)
         await box.remove_children()
-        await box.mount(*list(self._hypervisor_rows(hypervisor_fields(self.cfg.hypervisor, str(self.cfg.vm_root)))))
+        await box.mount(*list(self._hypervisor_rows(self._hv_fields())))
         self._sync_actions()
 
     def _ask_for_mount_helper(self) -> MountHelper | None:
@@ -460,8 +618,17 @@ class LabApp(App[int]):
         helper: MountHelper | None = None
         try:
             if any(stage.needs_sudo for stage, _args in jobs):
-                helper = self._ask_for_mount_helper()
-                if helper is None:
+                mount_script = (
+                    self.cfg.root / "scripts" / "hypervisors" / self.cfg.hypervisor / "guest-additions.sh"
+                )
+                if not mount_script.is_file():
+                    self.call_from_thread(
+                        self._write,
+                        "This platform does not mount a disk, so there is no administrator prompt.",
+                    )
+                else:
+                    helper = self._ask_for_mount_helper()
+                if helper is None and mount_script.is_file():
                     if not self._cancel.is_set():
                         self.call_from_thread(
                             self._write,
@@ -524,6 +691,10 @@ class LabApp(App[int]):
         if reason:
             self._write(reason)
             return
+        blocked = self._proxmox_block([(stage, [])])
+        if blocked:
+            self._write(blocked)
+            return
         self._write(f"Starting stage {stage.number} — {stage.title}")
         if stage.number == 3:
             self._write("Stage 3 boots the gateway briefly, then powers it off.")
@@ -539,6 +710,10 @@ class LabApp(App[int]):
         if not chosen:
             self._write("Run all finished.")
             return
+        blocked_settings = self._proxmox_block([(stage, []) for stage in chosen])
+        if blocked_settings:
+            self._write(blocked_settings)
+            return
         chosen_numbers = {stage.number for stage in chosen}
         for stage in STAGES:
             if stage.number not in chosen_numbers:
@@ -547,6 +722,16 @@ class LabApp(App[int]):
         if any(stage.number == 3 for stage, _args in jobs):
             self._write("Stage 3 will not boot a VM. Stage 5 starts the lab.")
         self._start(jobs)
+
+    def _proxmox_block(self, jobs: list[tuple[Stage, list[str]]]) -> str:
+        if self.cfg.hypervisor != "proxmox":
+            return ""
+        if not any(stage.number >= 3 for stage, _args in jobs):
+            return ""
+        missing = missing_proxmox_settings(self.cfg)
+        if not missing:
+            return ""
+        return "Set the Proxmox " + ", ".join(missing) + " before this stage."
 
     def action_reset(self) -> None:
         if self._busy:
