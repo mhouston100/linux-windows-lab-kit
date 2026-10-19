@@ -67,9 +67,14 @@ resolve_paths() {
   # Optional interactive prompts (defaults under /virtualmachines).
   local do_prompt="${1:-0}"
 
-  : "${SOURCE_DIR:=$DEFAULT_SOURCE_DIR}"
-  : "${TMP_DIR:=$DEFAULT_TMP_DIR}"
   : "${VM_ROOT:=$DEFAULT_VM_ROOT}"
+  if [[ -n "${LAB_WORK_DIR:-}" ]]; then
+    SOURCE_DIR="${LAB_WORK_DIR}/source"
+    TMP_DIR="${LAB_WORK_DIR}/tmp"
+  else
+    : "${SOURCE_DIR:=$DEFAULT_SOURCE_DIR}"
+    : "${TMP_DIR:=$DEFAULT_TMP_DIR}"
+  fi
   : "${LAB_ZIP_PATH:=}"
   : "${GUIDES_ZIP_PATH:=}"
 
@@ -98,11 +103,20 @@ resolve_paths() {
     fi
   fi
 
-  # Command-line --kit / --dest win over lab.env and over the defaults above.
+  # --dest still sets both. The menu can set the work directory and the VM directory apart.
   if [[ -n "${LAB_CLI_DEST:-}" ]]; then
     VM_ROOT="$LAB_CLI_DEST"
+    LAB_WORK_DIR="$LAB_CLI_DEST"
     SOURCE_DIR="${LAB_CLI_DEST}/source"
     TMP_DIR="${LAB_CLI_DEST}/tmp"
+  fi
+  if [[ -n "${LAB_CLI_WORK:-}" ]]; then
+    LAB_WORK_DIR="$LAB_CLI_WORK"
+    SOURCE_DIR="${LAB_CLI_WORK}/source"
+    TMP_DIR="${LAB_CLI_WORK}/tmp"
+  fi
+  if [[ -n "${LAB_CLI_VM_DIR:-}" ]]; then
+    VM_ROOT="$LAB_CLI_VM_DIR"
   fi
   if [[ -n "${LAB_CLI_KIT:-}" ]]; then
     LAB_ZIP_PATH="$LAB_CLI_KIT"

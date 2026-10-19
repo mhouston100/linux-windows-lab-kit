@@ -6,7 +6,7 @@ Bash scripts that build a Windows lab on a Linux host from a Microsoft lab ZIP y
 
 - **Three servers.** A domain controller, a Configuration Manager server, and a gateway. They share an internal network. The gateway also has NAT, so the lab can reach the Internet.
 - **Six stages.** Extract the archive, convert the Hyper-V disks, create the virtual machines, write the lab account notes, start the machines in order, then check that cleanup will not delete the lab by accident.
-- **One screen.** `./scripts/lab.sh` opens a Python menu. Each stage, Run all, Settings, Reset, and Quit are buttons. The keys `1`–`6`, `a`, `s`, `c`, and `q` still do the same things. The stage scripts stay Bash.
+- **One screen.** `./scripts/lab.sh` opens a Python menu. Pick the hypervisor, check the settings, then Run all or Run next. Reset and Quit are there too. The keys `a`, `n`, `c`, and `q` do the same things. The stage scripts stay Bash.
 - **It picks up where it stopped.** A finished step is skipped until you reset or pass `--force`. Reset removes this lab only. The ZIP and any other virtual machines on the host stay.
 - **Platforms**
   - ✅ VirtualBox
@@ -48,13 +48,12 @@ Client VMs (domain-joined and workgroup Windows 11 machines built from `WindowsP
 
 | Key | Action |
 |-----|--------|
-| `1`–`6` | Run that stage |
 | `a` | Run every stage that has not passed yet, in order. Stage 3 does not boot a VM |
-| `s` | Change kit, destination, domain, account, password, or platform |
+| `n` | Run the next unfinished stage, starting at stage 1. Stage 3 boots the gateway briefly |
 | `c` | Reset this lab, after you confirm |
 | `q` | Leave the menu |
 
-The screen shows the current settings, a progress bar for each stage, a Parallel disks checkbox, buttons for each stage, Run all, settings, reset, and quit, and the live log. Parallel disks is on unless you turn it off. It converts independent server disks at the same time. The machines still boot one after another. `s` opens a form and writes `config/lab.env`. A blank password keeps the current one, and the password is never shown. While a stage is running, the settings stay as they were when the stage started. A blocked stage is refused until the stage it depends on has passed. The same lines are appended to `tmp/lab.log` under the destination (default `/virtualmachines/tmp/lab.log`). That file stays when you quit and when you reset the lab. Interrupt a running stage and the menu comes back; the stage's marker is left unset, so the next run retries it.
+The screen is a stack of titled boxes. Hypervisor choice is first, with VirtualBox in the first spot. The next box is that platform's settings, including the VirtualBox VM directory, then the lab settings: kit, work directory, domain, account, password, and Parallel disks. Fields you can change are text boxes. Fields you cannot change are plain text. Parallel disks is on unless you turn it off. It converts independent server disks at the same time. The machines still boot one after another. Leaving a field writes `config/lab.env`. A blank password keeps the current one, and the password is never shown. Progress for each stage stays on the screen, with Run all, Run next, Reset, and Quit underneath, then the live log. While a stage is running, the settings stay as they were when the stage started. The same lines are appended to `tmp/lab.log` under the work directory (default `/virtualmachines/tmp/lab.log`). That file stays when you quit and when you reset the lab. Interrupt a running stage and the menu comes back; the stage's marker is left unset, so the next run retries it.
 
 From a shell without a terminal, `./scripts/lab.sh` prints the checklist and exits 0 only when every marker is present.
 
@@ -97,7 +96,7 @@ Finished steps record a timestamp under `TMP_DIR/.markers`. The next run skips a
 | `qemu-nbd`, `ntfs-3g` | Mount a guest disk to plant Guest Additions. The menu asks for sudo once, before a run that needs this mount |
 | `python3`, Textual | The menu. Stage scripts stay Bash. Install Textual with the venv command above |
 
-Large media stays under the destination, default `/virtualmachines`. It does not go into this git repository and it does not need to go under your home directory.
+Large media stays under the work directory and the VM directory, both `/virtualmachines` unless you change them. It does not go into this git repository and it does not need to go under your home directory.
 
 | Path | Role |
 |------|------|
@@ -106,7 +105,7 @@ Large media stays under the destination, default `/virtualmachines`. It does not
 | `/virtualmachines/tmp` | ZPAQ unpack, setup resources, inventory, converted disks, identity files, markers, `lab.log` |
 | `/virtualmachines/HYD-*` | Virtual machine folders and the disks those VMs boot |
 
-`--kit` selects the ZIP. `--dest` selects the output root: `source/` and `tmp/` are created under it, and the root itself is the virtual machine folder. Flags override `config/lab.env`. The menu edits the same file with `s`. A phase script run on its own still asks for the paths; Enter accepts the default. `--no-prompt` or `LAB_NONINTERACTIVE=1` skips those prompts.
+`--kit` selects the ZIP. `--dest` sets both the work directory and the VM directory for that run: `source/` and `tmp/` are created under it, and the virtual machines go there too. The menu can save those two directories separately. Flags override `config/lab.env`. A phase script run on its own still asks for the paths; Enter accepts the default. `--no-prompt` or `LAB_NONINTERACTIVE=1` skips those prompts.
 
 ## Configuration
 
@@ -114,9 +113,10 @@ Large media stays under the destination, default `/virtualmachines`. It does not
 
 | Setting | Default | Meaning |
 |---------|---------|---------|
-| `SOURCE_DIR` | `/virtualmachines/source` | Unzip destination |
-| `TMP_DIR` | `/virtualmachines/tmp` | Working tree |
-| `VM_ROOT` | `/virtualmachines` | Hypervisor machine folder |
+| `LAB_WORK_DIR` | `/virtualmachines` | Unzip, converted disks, and the log. `source/` and `tmp/` are created under it |
+| `SOURCE_DIR` | `/virtualmachines/source` | Immediate unzip |
+| `TMP_DIR` | `/virtualmachines/tmp` | Converted disks, markers, and the log |
+| `VM_ROOT` | `/virtualmachines` | VirtualBox machine folders and final disks |
 | `LAB_ZIP_PATH` | the Kit/Original ZIP | Archive for this run |
 | `HYPERVISOR` | `virtualbox` | Backend directory name |
 | `LAB_PREFIX` | `HYD` | VM name prefix and network prefix |
@@ -201,11 +201,11 @@ Phase 6 does not delete the lab. It checks that `cleanup-lab.sh` refuses to run 
 Press `c` in the menu to reset the lab. The menu asks you to confirm, then deletes:
 
 - every VM named by an active row in `config/topology.tsv`, after powering it off
-- that VM's folder under the destination
+- that VM's folder under the VM directory
 - `source/`, and everything under `tmp/` except `lab.log` (markers and the Guest Additions cache are removed)
 - VirtualBox media still registered under those paths
 
-The kit ZIP stays. The destination itself stays, so other virtual machines on the host stay. A name is removed only when it is in the topology and starts with `LAB_PREFIX`. The same reset from a shell is:
+The kit ZIP stays. The VM directory itself stays, so other virtual machines on the host stay. A name is removed only when it is in the topology and starts with `LAB_PREFIX`. The same reset from a shell is:
 
 ```bash
 ./scripts/cleanup-lab.sh --reset --yes

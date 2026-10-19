@@ -60,6 +60,14 @@ def stages_to_run(config: LabConfig) -> tuple[list[Stage], str]:
     return chosen, ""
 
 
+def next_stage(config: LabConfig) -> Stage | None:
+    """The first stage that has not finished. Stage 1 when nothing has run."""
+    for stage in STAGES:
+        if stage_state(config, stage) != "done":
+            return stage
+    return None
+
+
 def stage_by_number(number: int) -> Stage:
     for stage in STAGES:
         if stage.number == number:

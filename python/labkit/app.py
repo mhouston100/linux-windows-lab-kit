@@ -8,23 +8,41 @@ from pathlib import Path
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, HorizontalScroll, Vertical
+from textual.containers import Horizontal, HorizontalScroll, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Button, Checkbox, Header, Input, Label, ProgressBar, RichLog, Select, Static
+from textual.widgets import Button, Checkbox, Header, Input, Label, ProgressBar, RichLog, Static
 
-from labkit.config import LabConfig, hypervisors, write_keys
+from labkit.config import (
+    HypervisorField,
+    LabConfig,
+    hypervisor_fields,
+    load_config,
+    ordered_hypervisors,
+    write_keys,
+)
 from labkit.runner import run_script, stage_args
-from labkit.stages import STAGES, Stage, note_progress, stage_percent, stage_state, stages_to_run
+from labkit.stages import STAGES, Stage, next_stage, note_progress, stage_percent, stage_state, stages_to_run
 from labkit.sudo_auth import MountHelper, start_mount_helper
 
+_NAME = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")
+_GENERAL = ("kit", "work", "domain", "user", "password")
 
-def _summary(config: LabConfig) -> str:
-    return "\n".join(config.summary_lines())
+
+def _platform_label(name: str) -> str:
+    if name == "virtualbox":
+        return "VirtualBox"
+    return name
 
 
-def _stage_label(stage: Stage) -> str:
-    short = stage.title.split()[0]
-    return f"{stage.number} {short}"
+def _hypervisor_title(name: str) -> str:
+    return f"{_platform_label(name)} - Edit hypervisor settings here"
+
+
+def _run_next_label(config: LabConfig) -> str:
+    stage = next_stage(config)
+    if stage is None:
+        return "Run Next (done)"
+    return f"Run Next (Stage {stage.number})"
 
 
 class ConfirmReset(ModalScreen[bool]):
@@ -114,145 +132,144 @@ class SudoPrompt(ModalScreen[bool]):
         self.dismiss(True)
 
 
-class SettingsScreen(ModalScreen[LabConfig | None]):
-    def __init__(self, config: LabConfig) -> None:
-        super().__init__()
-        self.config = config
-
-    def compose(self) -> ComposeResult:
-        names = hypervisors(self.config.root) or [self.config.hypervisor]
-        options = [(name, name) for name in names]
-        yield Vertical(
-            Static("Settings are written to config/lab.env. A blank password keeps the current one."),
-            Label("Kit ZIP"),
-            Input(value=str(self.config.lab_zip_path), id="kit"),
-            Label("Destination"),
-            Input(value=str(self.config.vm_root), id="dest"),
-            Label("Domain"),
-            Input(value=self.config.lab_domain, id="domain"),
-            Label("Account"),
-            Input(value=self.config.lab_admin_user, id="user"),
-            Label("Password"),
-            Input(placeholder="Leave blank to keep the current password", password=True, id="password"),
-            Label("Platform"),
-            Select(options, value=self.config.hypervisor if self.config.hypervisor in names else names[0], allow_blank=False, id="platform"),
-            Horizontal(
-                Button("Save", id="save", variant="primary"),
-                Button("Cancel", id="cancel"),
-            ),
-            id="settings-form",
-        )
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "cancel":
-            self.dismiss(None)
-            return
-        kit = self.query_one("#kit", Input).value.strip()
-        dest = self.query_one("#dest", Input).value.strip()
-        domain = self.query_one("#domain", Input).value.strip()
-        user = self.query_one("#user", Input).value.strip()
-        password = self.query_one("#password", Input).value
-        platform = self.query_one("#platform", Select).value
-        if not kit.lower().endswith(".zip"):
-            self.notify("Choose a .zip file.", severity="warning")
-            return
-        if not dest or dest in {"/", str(self.config.root)}:
-            self.notify("Choose a destination outside the git checkout.", severity="warning")
-            return
-        for label, value in (("Domain", domain), ("Account", user)):
-            if not value or any(ch not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-" for ch in value):
-                self.notify(f"{label} must use letters, digits, dots, underscores, or hyphens.", severity="warning")
-                return
-        if not isinstance(platform, str):
-            self.notify("Choose a platform.", severity="warning")
-            return
-        updates = {
-            "LAB_ZIP_PATH": kit,
-            "VM_ROOT": dest,
-            "SOURCE_DIR": str(self._path(dest) / "source"),
-            "TMP_DIR": str(self._path(dest) / "tmp"),
-            "LAB_DOMAIN": domain,
-            "LAB_ADMIN_USER": user,
-            "HYPERVISOR": platform,
-        }
-        if password:
-            updates["LAB_ADMIN_PASSWORD"] = password
-        write_keys(self.config.env_file, self.config.root / "config" / "lab.env.example", updates)
-        from labkit.config import load_config
-
-        self.dismiss(load_config(self.config.root, kit=kit, dest=dest))
-
-    @staticmethod
-    def _path(dest: str):
-        from pathlib import Path
-
-        return Path(dest)
-
-
 class LabApp(App[int]):
     TITLE = "Linux Windows Lab Kit"
     CSS = """
-    #summary { height: auto; max-height: 6; border: round $accent; padding: 0 1; margin-bottom: 1; }
-    #stages { height: auto; margin-bottom: 1; }
+    #setup { height: auto; }
+    .panel {
+        height: auto;
+        border: round $accent;
+        padding: 0 1;
+        margin-bottom: 1;
+    }
+    #platforms { height: 3; }
+    #platforms Button { margin-right: 1; }
+    .setting { height: auto; align: left middle; }
+    .setting Label { width: 22; }
+    .setting Input {
+        width: 1fr;
+        height: 1;
+        border: none;
+        border-left: tall $accent;
+        border-right: tall $accent;
+        background: $primary 40%;
+        padding: 0 1;
+    }
+    .setting Input:focus {
+        border-left: tall $accent;
+        border-right: tall $accent;
+        background: $primary 25%;
+    }
+    .setting Input.locked {
+        height: 1;
+        border: none;
+        background: transparent;
+        color: $text-muted;
+        padding: 0;
+    }
+    #parallel { height: 1; width: auto; margin: 0; }
+    #stages { height: auto; }
     .stage { height: 1; }
     .stage Label { width: 26; }
     .meta { width: 16; }
     ProgressBar { width: 1fr; }
-    #parallel { width: auto; height: 3; margin: 0 1 1 1; }
-    #actions { height: 3; margin-bottom: 1; }
+    #actions { height: 3; }
     #actions Button { margin-right: 1; }
-    #log { height: 1fr; border: round $primary; }
-    #confirm, #settings-form, #sudo-form { padding: 1 2; width: 80; height: auto; border: round $accent; background: $surface; }
-    #settings-form { width: 88; }
+    Screen { overflow-y: auto; }
+    #log { height: 1fr; min-height: 5; }
+    #confirm, #sudo-form { padding: 1 2; width: 80; height: auto; border: round $accent; background: $surface; }
     """
     BINDINGS = [
         Binding("a", "run_all", "Run all", show=False),
-        Binding("s", "settings", "Settings", show=False),
+        Binding("n", "run_next", "Run next", show=False),
         Binding("c", "reset", "Reset", show=False),
         Binding("q", "quit", "Quit", show=False),
         Binding("ctrl+c", "cancel", "Stop", show=False),
-        *[Binding(str(number), f"stage({number})", show=False) for number in range(1, 7)],
     ]
 
     def __init__(self, config: LabConfig, forward: list[str]) -> None:
         super().__init__()
         self.cfg = config
         self.forward = forward
+        self.platform_names = ordered_hypervisors(config.root) or [config.hypervisor]
         self._busy = False
         self._busy_stage: int | None = None
         self._live_pct: int | None = None
         self._cancel = threading.Event()
-        self._frozen_summary = ""
 
     def compose(self) -> ComposeResult:
         yield Header()
-        yield Static(_summary(self.cfg), id="summary")
-        with Vertical(id="stages"):
-            for stage in STAGES:
-                with Horizontal(classes="stage"):
-                    yield Label(f"{stage.number}  {stage.title}", id=f"label-{stage.number}")
-                    yield ProgressBar(total=100, show_eta=False, id=f"bar-{stage.number}")
-                    yield Label("", id=f"meta-{stage.number}", classes="meta")
-        yield Checkbox("Parallel disks", value=self.cfg.parallel, id="parallel")
-        with HorizontalScroll(id="actions"):
-            for stage in STAGES:
-                yield Button(_stage_label(stage), id=f"stage-{stage.number}")
-            yield Button("Run all (a)", id="run-all", variant="primary")
-            yield Button("Settings (s)", id="settings")
-            yield Button("Reset (c)", id="reset", variant="error")
-            yield Button("Quit (q)", id="quit")
-        yield RichLog(id="log", highlight=False, markup=False, wrap=True, max_lines=500)
+        with VerticalScroll(id="setup"):
+            with Vertical(id="platform-box", classes="panel"):
+                with HorizontalScroll(id="platforms"):
+                    for name in self.platform_names:
+                        selected = name == self.cfg.hypervisor
+                        yield Button(
+                            _platform_label(name),
+                            id=f"platform-{name}",
+                            variant="primary" if selected else "default",
+                        )
+            with Vertical(id="hv-settings", classes="panel"):
+                yield from self._hypervisor_rows(hypervisor_fields(self.cfg.hypervisor, str(self.cfg.vm_root)))
+            with Vertical(id="lab-settings", classes="panel"):
+                yield from self._general_row("Kit ZIP", str(self.cfg.lab_zip_path), "kit")
+                yield from self._general_row("Work directory", str(self.cfg.work_dir), "work")
+                yield from self._general_row("Domain", self.cfg.lab_domain, "domain")
+                yield from self._general_row("Account", self.cfg.lab_admin_user, "user")
+                yield from self._general_row("Password", "", "password", password=True)
+                yield Checkbox("Parallel disks", value=self.cfg.parallel, id="parallel", compact=True)
+            with Vertical(id="stages", classes="panel"):
+                for stage in STAGES:
+                    with Horizontal(classes="stage"):
+                        yield Label(f"{stage.number}  {stage.title}", id=f"label-{stage.number}")
+                        yield ProgressBar(total=100, show_eta=False, id=f"bar-{stage.number}")
+                        yield Label("", id=f"meta-{stage.number}", classes="meta")
+        with Vertical(id="run-box", classes="panel"):
+            with HorizontalScroll(id="actions"):
+                yield Button("Run all (a)", id="run-all", variant="primary")
+                yield Button(_run_next_label(self.cfg), id="run-next")
+                yield Button("Reset (c)", id="reset", variant="error")
+                yield Button("Quit (q)", id="quit")
+        yield RichLog(id="log", classes="panel", highlight=False, markup=False, wrap=True, max_lines=500)
+
+    @staticmethod
+    def _general_row(label: str, value: str, field_id: str, password: bool = False) -> ComposeResult:
+        placeholder = "Leave blank to keep the current password" if password else ""
+        yield Horizontal(
+            Label(label),
+            Input(value=value, id=field_id, password=password, placeholder=placeholder),
+            classes="setting",
+        )
+
+    @staticmethod
+    def _hypervisor_rows(fields: list[HypervisorField]) -> ComposeResult:
+        if not fields:
+            yield Static("No extra settings for this platform.")
+            return
+        for field in fields:
+            yield Horizontal(
+                Label(field.label),
+                Input(
+                    value=field.value,
+                    id=f"hv-{field.key}",
+                    disabled=not field.editable,
+                    compact=not field.editable,
+                    classes=None if field.editable else "locked",
+                ),
+                classes="setting",
+            )
 
     def on_mount(self) -> None:
+        self.query_one("#platform-box", Vertical).border_title = "Hypervisor - Choose the platform"
+        self.query_one("#hv-settings", Vertical).border_title = _hypervisor_title(self.cfg.hypervisor)
+        self.query_one("#lab-settings", Vertical).border_title = "Lab - Edit general lab settings here"
+        self.query_one("#stages", Vertical).border_title = "Status - Stage completion status"
+        self.query_one("#run-box", Vertical).border_title = "Run - Start the lab or reset it"
+        self.query_one("#log", RichLog).border_title = "Log - Output from this run"
         self.refresh_stages()
-        self._write("Pick a stage, or use the buttons. The same keys still work.")
+        self._write("Check the settings, then Run all or Run next. a and n do the same.")
 
     def refresh_stages(self) -> None:
-        summary = self.query_one("#summary", Static)
-        if self._busy and self._frozen_summary:
-            summary.update(self._frozen_summary)
-        else:
-            summary.update(_summary(self.cfg))
         for stage in STAGES:
             state = stage_state(self.cfg, stage, self._busy_stage)
             percent = stage_percent(self.cfg, stage, self._busy_stage, self._live_pct)
@@ -261,11 +278,18 @@ class LabApp(App[int]):
         self._sync_actions()
 
     def _sync_actions(self) -> None:
-        for stage in STAGES:
-            self.query_one(f"#stage-{stage.number}", Button).disabled = self._busy
-        for button_id in ("run-all", "settings", "reset"):
+        for button_id in ("run-all", "run-next", "reset"):
             self.query_one(f"#{button_id}", Button).disabled = self._busy
+        self.query_one("#run-next", Button).label = _run_next_label(self.cfg)
         self.query_one("#parallel", Checkbox).disabled = self._busy
+        for field_id in _GENERAL:
+            self.query_one(f"#{field_id}", Input).disabled = self._busy
+        for name in self.platform_names:
+            button = self.query_one(f"#platform-{name}", Button)
+            button.disabled = self._busy
+            button.variant = "primary" if name == self.cfg.hypervisor else "default"
+        for field in self.query("#hv-settings Input"):
+            field.disabled = True if "locked" in field.classes else self._busy
 
     def _write(self, line: str) -> None:
         self.query_one("#log", RichLog).write(line)
@@ -288,6 +312,89 @@ class LabApp(App[int]):
 
         self.call_from_thread(apply)
 
+    def _outside_checkout(self, value: str) -> bool:
+        return not value or value in {"/", str(self.cfg.root)}
+
+    def _save_field(self, field_id: str) -> bool:
+        if field_id not in _GENERAL and field_id != "hv-vm-dir":
+            return True
+        updates: dict[str, str] = {}
+        if field_id == "kit":
+            kit = self.query_one("#kit", Input).value.strip()
+            if kit == str(self.cfg.lab_zip_path):
+                return True
+            if not kit.lower().endswith(".zip"):
+                self.notify("Choose a .zip file.", severity="warning")
+                self.query_one("#kit", Input).value = str(self.cfg.lab_zip_path)
+                return False
+            updates["LAB_ZIP_PATH"] = kit
+        elif field_id == "work":
+            work = self.query_one("#work", Input).value.strip()
+            if work == str(self.cfg.work_dir):
+                return True
+            if self._outside_checkout(work):
+                self.notify("Choose a work directory outside the git checkout.", severity="warning")
+                self.query_one("#work", Input).value = str(self.cfg.work_dir)
+                return False
+            updates["LAB_WORK_DIR"] = work
+            updates["SOURCE_DIR"] = str(Path(work) / "source")
+            updates["TMP_DIR"] = str(Path(work) / "tmp")
+        elif field_id == "hv-vm-dir":
+            vm_dir = self.query_one("#hv-vm-dir", Input).value.strip()
+            if vm_dir == str(self.cfg.vm_root):
+                return True
+            if self._outside_checkout(vm_dir):
+                self.notify("Choose a VM directory outside the git checkout.", severity="warning")
+                self.query_one("#hv-vm-dir", Input).value = str(self.cfg.vm_root)
+                return False
+            updates["VM_ROOT"] = vm_dir
+        elif field_id in {"domain", "user"}:
+            value = self.query_one(f"#{field_id}", Input).value.strip()
+            current = self.cfg.lab_domain if field_id == "domain" else self.cfg.lab_admin_user
+            label = "Domain" if field_id == "domain" else "Account"
+            if value == current:
+                return True
+            if not value or any(ch not in _NAME for ch in value):
+                self.notify(f"{label} must use letters, digits, dots, underscores, or hyphens.", severity="warning")
+                self.query_one(f"#{field_id}", Input).value = current
+                return False
+            updates["LAB_DOMAIN" if field_id == "domain" else "LAB_ADMIN_USER"] = value
+        else:
+            password = self.query_one("#password", Input).value
+            if password == "":
+                return True
+            updates["LAB_ADMIN_PASSWORD"] = password
+        try:
+            write_keys(self.cfg.env_file, self.cfg.root / "config" / "lab.env.example", updates)
+        except OSError:
+            self.notify("Could not save that setting.", severity="error")
+            return False
+        self.cfg = load_config(self.cfg.root)
+        if field_id == "password":
+            self.query_one("#password", Input).value = ""
+        self.refresh_stages()
+        return True
+
+    def _commit_form(self) -> bool:
+        saved = True
+        fields = list(_GENERAL)
+        if self.cfg.hypervisor == "virtualbox":
+            fields.append("hv-vm-dir")
+        for field_id in fields:
+            if not self._save_field(field_id):
+                saved = False
+        return saved
+
+    def on_input_blurred(self, event: Input.Blurred) -> None:
+        if self._busy or not event.input.id:
+            return
+        self._save_field(event.input.id)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if isinstance(self.screen, SudoPrompt) or self._busy or not event.input.id:
+            return
+        self._save_field(event.input.id)
+
     def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
         if event.checkbox.id != "parallel" or self._busy:
             return
@@ -303,6 +410,21 @@ class LabApp(App[int]):
             )
         except OSError:
             self.notify("Could not save that setting.", severity="error")
+
+    async def _show_hypervisor(self, name: str) -> None:
+        if self._busy or name == self.cfg.hypervisor:
+            return
+        try:
+            write_keys(self.cfg.env_file, self.cfg.root / "config" / "lab.env.example", {"HYPERVISOR": name})
+        except OSError:
+            self.notify("Could not save that setting.", severity="error")
+            return
+        self.cfg = load_config(self.cfg.root)
+        box = self.query_one("#hv-settings", Vertical)
+        box.border_title = _hypervisor_title(self.cfg.hypervisor)
+        await box.remove_children()
+        await box.mount(*list(self._hypervisor_rows(hypervisor_fields(self.cfg.hypervisor, str(self.cfg.vm_root)))))
+        self._sync_actions()
 
     def _ask_for_mount_helper(self) -> MountHelper | None:
         """Ask once, before the run, and keep the helper for every mount."""
@@ -331,7 +453,6 @@ class LabApp(App[int]):
             return
         self._busy = True
         self._cancel.clear()
-        self._frozen_summary = _summary(self.cfg)
         self._sync_actions()
         self.run_worker(lambda: self._execute(jobs), thread=True, exclusive=True)
 
@@ -390,22 +511,26 @@ class LabApp(App[int]):
         self._busy = False
         self._busy_stage = None
         self._live_pct = None
-        self._frozen_summary = ""
         self.refresh_stages()
 
-    def action_stage(self, number: int) -> None:
-        if self._busy:
+    def action_run_next(self) -> None:
+        if self._busy or not self._commit_form():
             return
-        stage = next(item for item in STAGES if item.number == number)
+        stage = next_stage(self.cfg)
+        if stage is None:
+            self._write("Every stage has already finished.")
+            return
         reason = stage.block_reason(self.cfg)
         if reason:
             self._write(reason)
             return
         self._write(f"Starting stage {stage.number} — {stage.title}")
+        if stage.number == 3:
+            self._write("Stage 3 boots the gateway briefly, then powers it off.")
         self._start([(stage, stage_args(stage, self.forward, skip_smoke=False, parallel=self.cfg.parallel))])
 
     def action_run_all(self) -> None:
-        if self._busy:
+        if self._busy or not self._commit_form():
             return
         chosen, blocked = stages_to_run(self.cfg)
         if blocked:
@@ -422,19 +547,6 @@ class LabApp(App[int]):
         if any(stage.number == 3 for stage, _args in jobs):
             self._write("Stage 3 will not boot a VM. Stage 5 starts the lab.")
         self._start(jobs)
-
-    def action_settings(self) -> None:
-        if self._busy:
-            return
-
-        def apply(updated: LabConfig | None) -> None:
-            if updated is None:
-                return
-            self.cfg = updated
-            self._write("Settings saved.")
-            self.refresh_stages()
-
-        self.push_screen(SettingsScreen(self.cfg), apply)
 
     def action_reset(self) -> None:
         if self._busy:
@@ -459,15 +571,15 @@ class LabApp(App[int]):
             if isinstance(self.screen, SudoPrompt):
                 self.screen.dismiss(False)
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
+    async def on_button_pressed(self, event: Button.Pressed) -> None:
         button_id = event.button.id or ""
-        if button_id.startswith("stage-"):
+        if button_id.startswith("platform-"):
             event.stop()
-            self.action_stage(int(button_id.removeprefix("stage-")))
+            await self._show_hypervisor(button_id.removeprefix("platform-"))
             return
         action = {
             "run-all": self.action_run_all,
-            "settings": self.action_settings,
+            "run-next": self.action_run_next,
             "reset": self.action_reset,
             "quit": self.action_quit,
         }.get(button_id)

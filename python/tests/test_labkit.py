@@ -10,7 +10,7 @@ from pathlib import Path
 
 from labkit.config import LabConfig, load_config, parse_env, write_keys
 from labkit.runner import run_script, stage_args
-from labkit.stages import STAGES, note_progress, stage_percent, stage_state, stages_to_run
+from labkit.stages import STAGES, next_stage, note_progress, stage_percent, stage_state, stages_to_run
 from labkit.stages import Stage
 from labkit.sudo_auth import start_mount_helper
 
@@ -38,8 +38,25 @@ class EnvTests(unittest.TestCase):
             config_dir.mkdir()
             (config_dir / "lab.env").write_text("VM_ROOT=/virtualmachines\nLAB_DOMAIN=Corp\n", encoding="utf-8")
             loaded = load_config(root, dest="/tmp/lab-dest")
+            self.assertEqual(loaded.work_dir, Path("/tmp/lab-dest"))
             self.assertEqual(loaded.vm_root, Path("/tmp/lab-dest"))
             self.assertEqual(loaded.tmp_dir, Path("/tmp/lab-dest/tmp"))
+            self.assertEqual(loaded.source_dir, Path("/tmp/lab-dest/source"))
+
+    def test_work_directory_stays_apart_from_the_vm_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_dir = root / "config"
+            config_dir.mkdir()
+            (config_dir / "lab.env").write_text(
+                "LAB_WORK_DIR=/data/work\nVM_ROOT=/data/vms\n",
+                encoding="utf-8",
+            )
+            loaded = load_config(root)
+            self.assertEqual(loaded.work_dir, Path("/data/work"))
+            self.assertEqual(loaded.source_dir, Path("/data/work/source"))
+            self.assertEqual(loaded.tmp_dir, Path("/data/work/tmp"))
+            self.assertEqual(loaded.vm_root, Path("/data/vms"))
             self.assertEqual(loaded.lab_domain, "Corp")
 
 
@@ -69,6 +86,16 @@ class StageTests(unittest.TestCase):
             chosen, blocked = stages_to_run(loaded)
             self.assertEqual(blocked, "")
             self.assertEqual([stage.number for stage in chosen], [1, 2, 3, 4, 5, 6])
+
+    def test_next_stage_starts_at_one_and_moves_forward(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "config").mkdir()
+            loaded = load_config(root, dest=str(root / "dest"))
+            self.assertEqual(next_stage(loaded).number, 1)
+            loaded.markers_dir.mkdir(parents=True)
+            (loaded.markers_dir / "phase1.ok").write_text("ok\n", encoding="utf-8")
+            self.assertEqual(next_stage(loaded).number, 2)
 
 
 class RunnerTests(unittest.TestCase):
@@ -203,6 +230,19 @@ class ParallelTests(unittest.TestCase):
         self.assertNotIn("--parallel", args)
         self.assertEqual(args.count("--no-parallel"), 1)
 
+    def test_virtualbox_is_first_and_its_fields_are_locked(self) -> None:
+        from labkit.config import hypervisor_fields, ordered_hypervisors
+
+        names = ordered_hypervisors(Path(__file__).resolve().parents[2])
+        self.assertEqual(names[0], "virtualbox")
+        fields = {field.key: field for field in hypervisor_fields("virtualbox", "/virtualmachines")}
+        self.assertEqual(fields["disk-format"].value, "VDI")
+        self.assertFalse(fields["disk-format"].editable)
+        self.assertFalse(fields["ga-iso"].editable)
+        self.assertTrue(fields["ga-iso"].value)
+        self.assertEqual(fields["vm-dir"].value, "/virtualmachines")
+        self.assertTrue(fields["vm-dir"].editable)
+
 class CheckboxTests(unittest.IsolatedAsyncioTestCase):
     async def test_checkbox_starts_on_and_saves_when_cleared(self) -> None:
         from textual.widgets import Checkbox
@@ -218,14 +258,61 @@ class CheckboxTests(unittest.IsolatedAsyncioTestCase):
             env.write_text("LAB_DOMAIN=Corp\n", encoding="utf-8")
             example.write_text("LAB_DOMAIN=Corp\n", encoding="utf-8")
             app = LabApp(load_config(root), [])
-            async with app.run_test(size=(100, 30)) as pilot:
+            async with app.run_test(size=(110, 36)) as pilot:
+                from textual.widgets import Input
+
                 box = app.query_one("#parallel", Checkbox)
                 self.assertTrue(box.value)
+                self.assertIn("Parallel", str(box.render()))
+                self.assertGreater(box.size.height, 0)
                 self.assertLess(box.region.y, app.query_one("#actions").region.y)
+                self.assertEqual(len(app.query("#settings")), 0)
+                self.assertEqual(len(app.query("#stage-1")), 0)
+                disk = app.query_one("#hv-disk-format", Input)
+                self.assertTrue(disk.disabled)
+                self.assertEqual(disk.value, "VDI")
+                self.assertEqual(app.query_one("#platform-virtualbox").variant, "primary")
                 await pilot.click("#parallel")
                 await pilot.pause(0.2)
                 self.assertFalse(app.cfg.parallel)
                 self.assertIn("LAB_PARALLEL=0", env.read_text(encoding="utf-8"))
+
+    async def test_run_next_starts_stage_one(self) -> None:
+        from textual.widgets import Input
+
+        from labkit import app as app_module
+        from labkit.app import LabApp
+
+        calls: list[str] = []
+
+        def fake_run(config, script, args, on_line, cancelled, extra_env=None) -> int:
+            calls.append(Path(script).name)
+            return 0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_dir = root / "config"
+            config_dir.mkdir()
+            (config_dir / "lab.env").write_text("LAB_DOMAIN=Corp\n", encoding="utf-8")
+            (config_dir / "lab.env.example").write_text("LAB_DOMAIN=Corp\n", encoding="utf-8")
+            original = app_module.run_script
+            app_module.run_script = fake_run
+            try:
+                app = LabApp(load_config(root, dest=str(root / "dest")), [])
+                async with app.run_test(size=(110, 36)) as pilot:
+                    self.assertEqual(str(app.query_one("#run-next").label), "Run Next (Stage 1)")
+                    work = app.query_one("#work", Input)
+                    disk = app.query_one("#hv-disk-format", Input)
+                    vm_dir = app.query_one("#hv-vm-dir", Input)
+                    self.assertEqual(work.styles.border.left[0], "tall")
+                    self.assertEqual(vm_dir.styles.border.left[0], "tall")
+                    self.assertFalse(vm_dir.disabled)
+                    self.assertEqual(disk.styles.border.left[0], "")
+                    await pilot.click("#run-next")
+                    await pilot.pause(0.5)
+            finally:
+                app_module.run_script = original
+            self.assertEqual(calls, ["phase1.sh"])
 
 
 if __name__ == "__main__":

@@ -17,8 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 def _print_status(config: LabConfig) -> int:
     """The marker checklist stays in Bash. This only launches it."""
     env = os.environ.copy()
-    env["LAB_CLI_KIT"] = str(config.lab_zip_path)
-    env["LAB_CLI_DEST"] = str(config.vm_root)
+    env.update(config.cli_env())
     env["LAB_NONINTERACTIVE"] = "1"
     env["LAB_LOG_CAPTURE"] = "1"
     script = """

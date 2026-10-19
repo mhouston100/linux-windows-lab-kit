@@ -54,8 +54,7 @@ def run_script(
 ) -> int:
     env = os.environ.copy()
     env["LAB_LOG_CAPTURE"] = "1"
-    env["LAB_CLI_KIT"] = str(config.lab_zip_path)
-    env["LAB_CLI_DEST"] = str(config.vm_root)
+    env.update(config.cli_env())
     if extra_env:
         env.update(extra_env)
     proc = subprocess.Popen(
