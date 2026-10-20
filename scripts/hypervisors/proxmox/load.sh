@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Proxmox backend. Same hv_* hooks as VirtualBox. Disks are qcow2 uploaded
-# to a storage that allows the import content type. The API token never
-# goes on a command line.
+# Proxmox backend. Same hv_* hooks as VirtualBox. Disks are qcow2 copied
+# with rsync into the import directory, then imported through the API.
+# The API token never goes on a command line.
 
 # shellcheck source=prereqs.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/prereqs.sh"
@@ -58,7 +58,7 @@ hv_close_lab_media() {
     [[ -z "${name:-}" || "$name" =~ ^# ]] && continue
     [[ "$name" == "name" ]] && continue
     [[ "$name" == "${LAB_PREFIX}-"* ]] || continue
-    log "Removing import image ${name}.qcow2 if it is still on ${PVE_STORAGE}"
+    log "Removing import image ${name}.qcow2 if it is still on ${PVE_IMPORT_STORAGE}"
     pve_delete_import "${name}.qcow2" || true
   done <"${ROOT_DIR}/config/topology.tsv"
 }

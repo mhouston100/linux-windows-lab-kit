@@ -10,7 +10,7 @@ Bash scripts that build a Windows lab on a Linux host from a Microsoft lab ZIP y
 - **It picks up where it stopped.** A finished step is skipped until you reset or pass `--force`. Reset removes this lab only. The ZIP and any other virtual machines stay.
 - **Platforms**
   - [VirtualBox](docs/virtualbox.md) — the backend that has built this lab
-  - [Proxmox](docs/proxmox.md) — API create, start, and stop. Not yet run on a live node. The guest agent is not planted in the disk yet
+  - [Proxmox](docs/proxmox.md) — API create, start, and stop. Disk images are copied with rsync. The guest agent is not planted in the disk yet
   - libvirt — pending
   - VMware Workstation — pending
 

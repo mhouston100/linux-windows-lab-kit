@@ -13,6 +13,8 @@ VirtualBox is the backend that has built this lab. Shared stages, the menu, and 
 
 Disk format is VDI. The field is visible and locked. Guest OS ids are in `config/hypervisors/virtualbox/guests.tsv`.
 
+**Test connection** is on the right of the VirtualBox box. It runs `VBoxManage --version` and does not create a guest.
+
 ## Host tools
 
 | Tool | Used for |

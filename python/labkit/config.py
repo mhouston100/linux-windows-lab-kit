@@ -12,6 +12,14 @@ from pathlib import Path
 DEFAULT_VM_ROOT = Path("/virtualmachines")
 DEFAULT_LAB_ZIP = Path("/virtualmachines/Kit/Original/Win11_25H2_Lab.zip")
 DEFAULT_LAB_ZIP_NAME = "Win11_25H2_Lab.zip"
+DEFAULT_PVE_NODE = "pve"
+DEFAULT_PVE_IMPORT_STORAGE = "local"
+DEFAULT_PVE_STORAGE = "local-lvm"
+DEFAULT_PVE_BRIDGE = "vmbr1"
+DEFAULT_PVE_INTERNET_BRIDGE = "vmbr0"
+DEFAULT_PVE_TOKEN_ID = "root@pam!root"
+DEFAULT_PVE_SSH_USER = "root"
+DEFAULT_PVE_SSH_PORT = "22"
 
 
 @dataclass
@@ -33,11 +41,17 @@ class LabConfig:
     pve_api_host: str = ""
     pve_tls_fingerprint: str = ""
     pve_node: str = ""
+    pve_import_storage: str = ""
     pve_storage: str = ""
+    pve_keep_imports: bool = False
     pve_bridge: str = ""
     pve_internet_bridge: str = ""
     pve_token_id: str = ""
     pve_token_secret: str = ""
+    pve_ssh_user: str = ""
+    pve_ssh_host: str = ""
+    pve_ssh_port: str = ""
+    pve_ssh_identity: str = ""
 
     @property
     def markers_dir(self) -> Path:
@@ -146,13 +160,60 @@ def load_config(root: Path, kit: str | None = None, dest: str | None = None) -> 
         guest_additions_iso=values.get("VBOX_GUEST_ADDITIONS_ISO") or guest_additions_iso(),
         pve_api_host=values.get("PVE_API_HOST") or "",
         pve_tls_fingerprint=values.get("PVE_TLS_FINGERPRINT") or "",
-        pve_node=values.get("PVE_NODE") or "",
-        pve_storage=values.get("PVE_STORAGE") or "",
-        pve_bridge=values.get("PVE_BRIDGE") or "",
-        pve_internet_bridge=values.get("PVE_INTERNET_BRIDGE") or "",
-        pve_token_id=values.get("PVE_TOKEN_ID") or "",
+        pve_node=values.get("PVE_NODE") or DEFAULT_PVE_NODE,
+        pve_import_storage=values.get("PVE_IMPORT_STORAGE") or DEFAULT_PVE_IMPORT_STORAGE,
+        pve_storage=values.get("PVE_STORAGE") or DEFAULT_PVE_STORAGE,
+        pve_keep_imports=_flag(values.get("PVE_KEEP_IMPORTS"), default=False),
+        pve_bridge=values.get("PVE_BRIDGE") or DEFAULT_PVE_BRIDGE,
+        pve_internet_bridge=values.get("PVE_INTERNET_BRIDGE") or DEFAULT_PVE_INTERNET_BRIDGE,
+        pve_token_id=values.get("PVE_TOKEN_ID") or DEFAULT_PVE_TOKEN_ID,
         pve_token_secret=values.get("PVE_TOKEN_SECRET") or "",
+        pve_ssh_user=values.get("PVE_SSH_USER") or DEFAULT_PVE_SSH_USER,
+        pve_ssh_host=values.get("PVE_SSH_HOST") or "",
+        pve_ssh_port=values.get("PVE_SSH_PORT") or DEFAULT_PVE_SSH_PORT,
+        pve_ssh_identity=values.get("PVE_SSH_IDENTITY") or "",
     )
+
+
+def example_defaults(example: Path) -> dict[str, str]:
+    """Uncommented example assignments that have a value. Empty and commented lines stay out."""
+    if not example.is_file():
+        return {}
+    defaults: dict[str, str] = {}
+    for raw in example.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key.isidentifier():
+            continue
+        value = _unquote(value)
+        if value == "":
+            continue
+        defaults[key] = value
+    return defaults
+
+
+def ensure_saved_defaults(root: Path) -> None:
+    """Write example defaults that lab.env does not already set.
+
+    The menu shows these values even when the line was never saved. A stage
+    sources the file, so the line has to be there. Existing lines stay.
+    """
+    env_file = root / "config" / "lab.env"
+    example = root / "config" / "lab.env.example"
+    if not example.is_file():
+        return
+    if not env_file.is_file():
+        env_file.parent.mkdir(parents=True, exist_ok=True)
+        write_keys(env_file, example, {})
+        return
+    present = parse_env(env_file.read_text(encoding="utf-8", errors="replace"))
+    missing = {key: value for key, value in example_defaults(example).items() if key not in present}
+    if not missing:
+        return
+    write_keys(env_file, example, missing)
 
 
 def write_keys(env_file: Path, example: Path, updates: dict[str, str]) -> None:
@@ -272,19 +333,24 @@ def hypervisor_fields(
                 "TLS fingerprint",
                 values.get("tls_fingerprint", ""),
                 True,
-                placeholder="SHA256 from the node certificate",
+                placeholder="Optional. SHA256 pin of the node certificate. Blank skips the check",
             ),
-            HypervisorField("node", "Node", values.get("node", ""), True, placeholder="pve"),
-            HypervisorField("storage", "Storage", values.get("storage", ""), True, placeholder="local"),
-            HypervisorField("bridge", "CorpNet bridge", values.get("bridge", ""), True, placeholder="vmbr0"),
+            HypervisorField("node", "Node", values.get("node") or DEFAULT_PVE_NODE, True),
+            HypervisorField(
+                "import-storage",
+                "Import storage",
+                values.get("import_storage") or DEFAULT_PVE_IMPORT_STORAGE,
+                True,
+            ),
+            HypervisorField("storage", "Disk storage", values.get("storage") or DEFAULT_PVE_STORAGE, True),
+            HypervisorField("bridge", "CorpNet bridge", values.get("bridge") or DEFAULT_PVE_BRIDGE, True),
             HypervisorField(
                 "internet-bridge",
                 "Internet bridge",
-                values.get("internet_bridge", ""),
+                values.get("internet_bridge") or DEFAULT_PVE_INTERNET_BRIDGE,
                 True,
-                placeholder="bridge with a route out",
             ),
-            HypervisorField("token-id", "Token id", values.get("token_id", ""), True, placeholder="user@pve!token"),
+            HypervisorField("token-id", "Token id", values.get("token_id") or DEFAULT_PVE_TOKEN_ID, True),
             HypervisorField(
                 "token-secret",
                 "Token secret",
@@ -292,6 +358,22 @@ def hypervisor_fields(
                 True,
                 secret=True,
                 placeholder="Leave blank to keep the current token",
+            ),
+            HypervisorField("ssh-user", "SSH user", values.get("ssh_user") or DEFAULT_PVE_SSH_USER, True),
+            HypervisorField(
+                "ssh-host",
+                "SSH host",
+                values.get("ssh_host", ""),
+                True,
+                placeholder="Blank uses the API host",
+            ),
+            HypervisorField("ssh-port", "SSH port", values.get("ssh_port") or DEFAULT_PVE_SSH_PORT, True),
+            HypervisorField(
+                "ssh-identity",
+                "SSH identity",
+                values.get("ssh_identity", ""),
+                True,
+                placeholder="Optional key. A menu run asks for the password",
             ),
         ]
     return []
@@ -328,6 +410,30 @@ def normalize_fingerprint(value: str) -> str | None:
     return ":".join(text[index:index + 2] for index in range(0, 64, 2))
 
 
+def proxmox_ssh_user_ok(value: str) -> bool:
+    return re.fullmatch(r"[A-Za-z_][A-Za-z0-9._-]{0,31}", value) is not None
+
+
+def proxmox_ssh_host_ok(value: str) -> bool:
+    if value == "":
+        return True
+    return re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9.-]{0,252})?", value) is not None
+
+
+def proxmox_ssh_port_ok(value: str) -> bool:
+    if not re.fullmatch(r"[0-9]{1,5}", value):
+        return False
+    return 1 <= int(value) <= 65535
+
+
+def proxmox_ssh_identity_ok(value: str) -> bool:
+    if value == "":
+        return True
+    if any(ord(char) <= 32 or char in "\"'\\$`" for char in value):
+        return False
+    return Path(value).is_file()
+
+
 def proxmox_secret_ok(value: str) -> bool:
     if not value or len(value) > 256:
         return False
@@ -339,12 +445,14 @@ def missing_proxmox_settings(config: LabConfig) -> list[str]:
     missing: list[str] = []
     if not proxmox_host_ok(config.pve_api_host):
         missing.append("API host")
-    if normalize_fingerprint(config.pve_tls_fingerprint) is None:
+    if config.pve_tls_fingerprint and normalize_fingerprint(config.pve_tls_fingerprint) is None:
         missing.append("TLS fingerprint")
     if not proxmox_name_ok(config.pve_node):
         missing.append("node")
+    if not proxmox_name_ok(config.pve_import_storage):
+        missing.append("import storage")
     if not proxmox_name_ok(config.pve_storage):
-        missing.append("storage")
+        missing.append("disk storage")
     if not proxmox_name_ok(config.pve_bridge):
         missing.append("CorpNet bridge")
     if not proxmox_name_ok(config.pve_internet_bridge):
@@ -353,4 +461,12 @@ def missing_proxmox_settings(config: LabConfig) -> list[str]:
         missing.append("token id")
     if not proxmox_secret_ok(config.pve_token_secret):
         missing.append("token secret")
+    if not proxmox_ssh_user_ok(config.pve_ssh_user):
+        missing.append("SSH user")
+    if not proxmox_ssh_host_ok(config.pve_ssh_host):
+        missing.append("SSH host")
+    if not proxmox_ssh_port_ok(config.pve_ssh_port):
+        missing.append("SSH port")
+    if not proxmox_ssh_identity_ok(config.pve_ssh_identity):
+        missing.append("SSH identity")
     return missing

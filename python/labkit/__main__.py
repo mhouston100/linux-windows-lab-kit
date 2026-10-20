@@ -7,7 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from labkit.config import LabConfig, load_config
+from labkit.config import LabConfig, ensure_saved_defaults, load_config
 from labkit.runner import run_script, stage_args
 from labkit.stages import STAGES, marker_present, stage_by_number, stages_to_run
 
@@ -81,6 +81,7 @@ def main(argv: list[str] | None = None) -> int:
             forward.append(item)
         index += 1
 
+    ensure_saved_defaults(ROOT)
     config = load_config(ROOT, kit=kit, dest=dest)
     if not command:
         command = "menu" if sys.stdin.isatty() and sys.stdout.isatty() else "status"

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Proxmox: upload qcow2 images and create the server VMs through the API.
+# Proxmox: copy qcow2 images with rsync and create the server VMs through the API.
 
 set -euo pipefail
 HV_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -135,12 +135,18 @@ attach_disk() {
   local name="$1" vmid="$2" src="$3" base body import
   base="$(basename "$src")"
   pve_upload "$src"
-  import="${PVE_STORAGE}:0,import-from=${PVE_STORAGE}:import/${base}"
+  import="${PVE_STORAGE}:0,import-from=${PVE_IMPORT_STORAGE}:import/${base}"
   log "Importing ${base} onto ${name} as SATA"
+  # POST is the asynchronous config call. PUT runs the import inside the request,
+  # and pveproxy closes that after 30 seconds with HTTP 596.
   body="$(pve_form sata0 "$import" boot "order=sata0")"
-  pve_call PUT "/nodes/$(pve_quote "$PVE_NODE")/qemu/${vmid}/config" --data "$body"
-  pve_expect PUT "/nodes/${PVE_NODE}/qemu/${vmid}/config"
+  pve_call POST "/nodes/$(pve_quote "$PVE_NODE")/qemu/${vmid}/config" --data "$body"
+  pve_expect POST "/nodes/${PVE_NODE}/qemu/${vmid}/config"
   pve_follow "$PVE_RESPONSE"
+  if [[ "${PVE_REMOVE_UPLOADS:-1}" == "1" ]]; then
+    log "Removing uploaded ${base} from ${PVE_IMPORT_STORAGE}"
+    pve_delete_import "$base"
+  fi
 }
 
 smoke_one() {
@@ -154,8 +160,19 @@ smoke_one() {
   log "Smoke: ${name} OK"
 }
 
-log "Proxmox node=${PVE_NODE} storage=${PVE_STORAGE} bridge=${PVE_BRIDGE}"
+log "Proxmox node=${PVE_NODE} import=${PVE_IMPORT_STORAGE} disks=${PVE_STORAGE} bridge=${PVE_BRIDGE}"
 log "CONVERT_DIR=$CONVERT_DIR"
+
+upload_paths=()
+while IFS=$'\t' read -r name role memory_mb cpus disk nic1 nic2 notes || [[ -n "${name:-}" ]]; do
+  [[ -z "${name:-}" || "$name" =~ ^# ]] && continue
+  [[ "$name" == "name" ]] && continue
+  src="$(converted_disk "$disk")"
+  [[ -f "$src" ]] || die "Converted disk missing: ${src} (run phase 2 first)"
+  upload_paths+=("$src")
+done <"$TOPOLOGY_FILE"
+pve_plan_uploads "${upload_paths[@]}"
+pve_check_copy
 
 created=()
 while IFS=$'\t' read -r name role memory_mb cpus disk nic1 nic2 notes || [[ -n "${name:-}" ]]; do

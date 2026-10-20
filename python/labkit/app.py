@@ -6,12 +6,16 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
+from textual.actions import SkipAction
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, HorizontalScroll, Vertical, VerticalScroll
+from textual.events import MouseUp
 from textual.screen import ModalScreen
+from textual.widget import Widget
 from textual.widgets import Button, Checkbox, Header, Input, Label, ProgressBar, RichLog, Static
 
+from labkit.clipboard import read_clipboard, write_clipboard
 from labkit.config import (
     HypervisorField,
     LabConfig,
@@ -23,11 +27,16 @@ from labkit.config import (
     proxmox_host_ok,
     proxmox_name_ok,
     proxmox_secret_ok,
+    proxmox_ssh_host_ok,
+    proxmox_ssh_identity_ok,
+    proxmox_ssh_port_ok,
+    proxmox_ssh_user_ok,
     proxmox_token_ok,
     write_keys,
 )
 from labkit.runner import run_script, stage_args
 from labkit.stages import STAGES, Stage, next_stage, note_progress, stage_percent, stage_state, stages_to_run
+from labkit.ssh_auth import SshSession, login_error, start_ssh_session
 from labkit.sudo_auth import MountHelper, start_mount_helper
 
 _NAME = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")
@@ -68,6 +77,41 @@ class ConfirmReset(ModalScreen[bool]):
         self.dismiss(event.button.id == "yes")
 
 
+class LabInput(Input):
+    """Input that copies and pastes through the desktop clipboard."""
+
+    BINDINGS = [
+        Binding("ctrl+shift+v,shift+insert", "paste", show=False),
+        Binding("ctrl+shift+c", "copy", show=False),
+    ]
+
+    def action_copy(self) -> None:
+        selected = self.selected_text
+        if not selected:
+            raise SkipAction()
+        write_clipboard(selected)
+        self.app.copy_to_clipboard(selected)
+
+    def action_paste(self) -> None:
+        if self.disabled:
+            return
+        self._insert_pasted(read_clipboard() or self.app.clipboard)
+
+    def on_mouse_up(self, event: MouseUp) -> None:
+        if event.button != 2 or self.disabled:
+            return
+        event.stop()
+        self.focus()
+        self._insert_pasted(read_clipboard(primary=True) or read_clipboard() or self.app.clipboard)
+
+    def _insert_pasted(self, text: str) -> None:
+        line = text.splitlines()[0].strip() if text else ""
+        if not line:
+            return
+        start, end = self.selection
+        self.replace(line, start, end)
+
+
 class SudoPrompt(ModalScreen[bool]):
     """Ask once. The helper started here serves every mount in the run."""
 
@@ -86,7 +130,7 @@ class SudoPrompt(ModalScreen[bool]):
                 "The rest of this run will not ask again. "
                 "It is not stored, and it is not the lab account password."
             ),
-            Input(placeholder="Password", password=True, id="sudo-password"),
+            LabInput(placeholder="Password", password=True, id="sudo-password"),
             Horizontal(
                 Button("Continue", id="sudo-continue", variant="primary"),
                 Button("Cancel", id="sudo-cancel"),
@@ -140,6 +184,97 @@ class SudoPrompt(ModalScreen[bool]):
         self.dismiss(True)
 
 
+class SshPrompt(ModalScreen[bool]):
+    """Ask once, before a run starts. The password lasts for that run only."""
+
+    BINDINGS = [Binding("escape", "cancel_ssh", "Cancel", show=False)]
+
+    def __init__(self, login: tuple[str, str, str] | None) -> None:
+        super().__init__()
+        self.login = login
+        self.session: SshSession | None = None
+        self._checking = False
+
+    def compose(self) -> ComposeResult:
+        if self.login is None:
+            who = "the Proxmox node"
+        else:
+            user, host, port = self.login
+            who = f"{user}@{host}" if port == "22" else f"{user}@{host} port {port}"
+        yield Vertical(
+            Static(
+                f"Enter the SSH password for {who} once. "
+                "The rest of this run will not ask again. "
+                "It is not stored, and it is not the lab account password."
+            ),
+            LabInput(placeholder="SSH password", password=True, id="ssh-password"),
+            Horizontal(
+                Button("Continue", id="ssh-continue", variant="primary"),
+                Button("Cancel", id="ssh-cancel"),
+            ),
+            id="ssh-form",
+        )
+
+    def on_mount(self) -> None:
+        self.query_one("#ssh-password", Input).focus()
+
+    def action_cancel_ssh(self) -> None:
+        self.dismiss(False)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "ssh-cancel":
+            event.stop()
+            self.dismiss(False)
+            return
+        if event.button.id == "ssh-continue":
+            event.stop()
+            self._submit()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        event.stop()
+        self._submit()
+
+    def _submit(self) -> None:
+        if self._checking:
+            return
+        field = self.query_one("#ssh-password", Input)
+        password = field.value
+        field.value = ""
+        if password == "":
+            self.notify("Enter the SSH password.", severity="warning")
+            field.focus()
+            return
+        session = start_ssh_session(password)
+        del password
+        if session is None:
+            self.notify("That SSH password cannot be used.", severity="warning")
+            field.focus()
+            return
+        if self.login is None:
+            session.stop()
+            self.notify("Set the SSH user and host before continuing.", severity="warning")
+            field.focus()
+            return
+        self._checking = True
+        self.notify("Checking the SSH login.")
+        try:
+            problem = login_error(session, *self.login)
+        finally:
+            self._checking = False
+        if problem:
+            session.stop()
+            self.notify(problem, severity="error")
+            field.focus()
+            return
+        user, host, port = self.login
+        where = f"{user}@{host}" if port == "22" else f"{user}@{host} port {port}"
+        write = getattr(self.app, "_write", None)
+        if write is not None:
+            write(f"SSH login accepted for {where}.")
+        self.session = session
+        self.dismiss(True)
+
+
 class LabApp(App[int]):
     TITLE = "Linux Windows Lab Kit"
     CSS = """
@@ -175,7 +310,11 @@ class LabApp(App[int]):
         color: $text-muted;
         padding: 0;
     }
+    #hv-body { height: auto; align: left middle; }
+    #hv-fields { width: 1fr; height: auto; }
+    #test-connection { margin-left: 1; }
     #parallel { height: 1; width: auto; margin: 0; }
+    #hv-keep-imports { height: 1; width: auto; margin: 0; }
     #stages { height: auto; }
     .stage { height: 1; }
     .stage Label { width: 26; }
@@ -185,7 +324,7 @@ class LabApp(App[int]):
     #actions Button { margin-right: 1; }
     Screen { overflow-y: auto; }
     #log { height: 1fr; min-height: 5; }
-    #confirm, #sudo-form { padding: 1 2; width: 80; height: auto; border: round $accent; background: $surface; }
+    #confirm, #sudo-form, #ssh-form { padding: 1 2; width: 80; height: auto; border: round $accent; background: $surface; }
     """
     BINDINGS = [
         Binding("a", "run_all", "Run all", show=False),
@@ -218,7 +357,10 @@ class LabApp(App[int]):
                             variant="primary" if selected else "default",
                         )
             with Vertical(id="hv-settings", classes="panel"):
-                yield from self._hypervisor_rows(self._hv_fields())
+                with Horizontal(id="hv-body"):
+                    with Vertical(id="hv-fields"):
+                        yield from self._hv_mount_widgets()
+                    yield Button("Test connection", id="test-connection")
             with Vertical(id="lab-settings", classes="panel"):
                 yield from self._general_row("Kit ZIP", str(self.cfg.lab_zip_path), "kit")
                 yield from self._general_row("Work directory", str(self.cfg.work_dir), "work")
@@ -249,10 +391,15 @@ class LabApp(App[int]):
                 "api_host": self.cfg.pve_api_host,
                 "tls_fingerprint": self.cfg.pve_tls_fingerprint,
                 "node": self.cfg.pve_node,
+                "import_storage": self.cfg.pve_import_storage,
                 "storage": self.cfg.pve_storage,
                 "bridge": self.cfg.pve_bridge,
                 "internet_bridge": self.cfg.pve_internet_bridge,
                 "token_id": self.cfg.pve_token_id,
+                "ssh_user": self.cfg.pve_ssh_user,
+                "ssh_host": self.cfg.pve_ssh_host,
+                "ssh_port": self.cfg.pve_ssh_port,
+                "ssh_identity": self.cfg.pve_ssh_identity,
             },
         )
 
@@ -261,9 +408,22 @@ class LabApp(App[int]):
         placeholder = "Leave blank to keep the current password" if password else ""
         yield Horizontal(
             Label(label),
-            Input(value=value, id=field_id, password=password, placeholder=placeholder),
+            LabInput(value=value, id=field_id, password=password, placeholder=placeholder),
             classes="setting",
         )
+
+    def _hv_mount_widgets(self) -> list[Widget]:
+        widgets: list[Widget] = list(self._hypervisor_rows(self._hv_fields()))
+        if self.cfg.hypervisor == "proxmox":
+            widgets.append(
+                Checkbox(
+                    "Keep uploaded images",
+                    value=self.cfg.pve_keep_imports,
+                    id="hv-keep-imports",
+                    compact=True,
+                )
+            )
+        return widgets
 
     @staticmethod
     def _hypervisor_rows(fields: list[HypervisorField]) -> ComposeResult:
@@ -273,7 +433,7 @@ class LabApp(App[int]):
         for field in fields:
             yield Horizontal(
                 Label(field.label),
-                Input(
+                LabInput(
                     value="" if field.secret else field.value,
                     id=f"hv-{field.key}",
                     password=field.secret,
@@ -304,7 +464,7 @@ class LabApp(App[int]):
         self._sync_actions()
 
     def _sync_actions(self) -> None:
-        for button_id in ("run-all", "run-next", "reset"):
+        for button_id in ("run-all", "run-next", "reset", "test-connection"):
             self.query_one(f"#{button_id}", Button).disabled = self._busy
         self.query_one("#run-next", Button).label = _run_next_label(self.cfg)
         self.query_one("#parallel", Checkbox).disabled = self._busy
@@ -316,6 +476,8 @@ class LabApp(App[int]):
             button.variant = "primary" if name == self.cfg.hypervisor else "default"
         for field in self.query("#hv-settings Input"):
             field.disabled = True if "locked" in field.classes else self._busy
+        for box in self.query("#hv-keep-imports"):
+            box.disabled = self._busy
 
     def _write(self, line: str) -> None:
         self.query_one("#log", RichLog).write(line)
@@ -355,10 +517,16 @@ class LabApp(App[int]):
                 "Node must use letters, digits, dots, underscores, or hyphens.",
                 proxmox_name_ok,
             ),
+            "hv-import-storage": (
+                "PVE_IMPORT_STORAGE",
+                self.cfg.pve_import_storage,
+                "Import storage must use letters, digits, dots, underscores, or hyphens.",
+                proxmox_name_ok,
+            ),
             "hv-storage": (
                 "PVE_STORAGE",
                 self.cfg.pve_storage,
-                "Storage must use letters, digits, dots, underscores, or hyphens.",
+                "Disk storage must use letters, digits, dots, underscores, or hyphens.",
                 proxmox_name_ok,
             ),
             "hv-bridge": (
@@ -376,7 +544,7 @@ class LabApp(App[int]):
             "hv-token-id": (
                 "PVE_TOKEN_ID",
                 self.cfg.pve_token_id,
-                "Token id must look like user@pve!token.",
+                "Token id must look like user@realm!token.",
                 proxmox_token_ok,
             ),
         }[field_id]
@@ -398,9 +566,8 @@ class LabApp(App[int]):
         if raw == "":
             if current == "":
                 return True
-            self.notify("TLS fingerprint must be a SHA256 hex string.", severity="warning")
-            widget.value = current
-            return False
+            updates["PVE_TLS_FINGERPRINT"] = ""
+            return True
         value = normalize_fingerprint(raw)
         if value is None:
             self.notify("TLS fingerprint must be a SHA256 hex string.", severity="warning")
@@ -421,11 +588,16 @@ class LabApp(App[int]):
             "hv-api-host",
             "hv-fingerprint",
             "hv-node",
+            "hv-import-storage",
             "hv-storage",
             "hv-bridge",
             "hv-internet-bridge",
             "hv-token-id",
             "hv-token-secret",
+            "hv-ssh-user",
+            "hv-ssh-host",
+            "hv-ssh-port",
+            "hv-ssh-identity",
         }:
             return True
         updates: dict[str, str] = {}
@@ -467,6 +639,9 @@ class LabApp(App[int]):
                 self.query_one("#hv-ga-iso", Input).value = self.cfg.guest_additions_iso
                 return False
             updates["VBOX_GUEST_ADDITIONS_ISO"] = iso
+        elif field_id in {"hv-ssh-user", "hv-ssh-host", "hv-ssh-port", "hv-ssh-identity"}:
+            if not self._save_ssh(field_id, updates):
+                return False
         elif field_id == "hv-token-secret":
             secret = self.query_one("#hv-token-secret", Input).value
             if secret == "":
@@ -482,6 +657,7 @@ class LabApp(App[int]):
         elif field_id in {
             "hv-api-host",
             "hv-node",
+            "hv-import-storage",
             "hv-storage",
             "hv-bridge",
             "hv-internet-bridge",
@@ -522,6 +698,44 @@ class LabApp(App[int]):
         self.refresh_stages()
         return True
 
+    def _save_ssh(self, field_id: str, updates: dict[str, str]) -> bool:
+        key, current, invalid, accept = {
+            "hv-ssh-user": (
+                "PVE_SSH_USER",
+                self.cfg.pve_ssh_user,
+                "SSH user must be a plain account name.",
+                proxmox_ssh_user_ok,
+            ),
+            "hv-ssh-host": (
+                "PVE_SSH_HOST",
+                self.cfg.pve_ssh_host,
+                "SSH host must be a hostname or address. Leave it blank to use the API host.",
+                proxmox_ssh_host_ok,
+            ),
+            "hv-ssh-port": (
+                "PVE_SSH_PORT",
+                self.cfg.pve_ssh_port,
+                "SSH port must be a number from 1 to 65535.",
+                proxmox_ssh_port_ok,
+            ),
+            "hv-ssh-identity": (
+                "PVE_SSH_IDENTITY",
+                self.cfg.pve_ssh_identity,
+                "SSH identity must be a key file, or blank to use the default key.",
+                proxmox_ssh_identity_ok,
+            ),
+        }[field_id]
+        widget = self.query_one(f"#{field_id}", Input)
+        value = widget.value.strip()
+        if value == current:
+            return True
+        if not accept(value):
+            self.notify(invalid, severity="warning")
+            widget.value = current
+            return False
+        updates[key] = value
+        return True
+
     def _commit_form(self) -> bool:
         saved = True
         fields = list(_GENERAL)
@@ -532,11 +746,16 @@ class LabApp(App[int]):
                 "hv-api-host",
                 "hv-fingerprint",
                 "hv-node",
+                "hv-import-storage",
                 "hv-storage",
                 "hv-bridge",
                 "hv-internet-bridge",
                 "hv-token-id",
                 "hv-token-secret",
+                "hv-ssh-user",
+                "hv-ssh-host",
+                "hv-ssh-port",
+                "hv-ssh-identity",
             ))
         for field_id in fields:
             if not self._save_field(field_id):
@@ -554,18 +773,21 @@ class LabApp(App[int]):
         self._save_field(event.input.id)
 
     def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
-        if event.checkbox.id != "parallel" or self._busy:
+        if self._busy or event.checkbox.id not in {"parallel", "hv-keep-imports"}:
             return
         enabled = bool(event.value)
-        if enabled == self.cfg.parallel:
-            return
-        self.cfg.parallel = enabled
+        if event.checkbox.id == "parallel":
+            if enabled == self.cfg.parallel:
+                return
+            self.cfg.parallel = enabled
+            updates = {"LAB_PARALLEL": "1" if enabled else "0"}
+        else:
+            if enabled == self.cfg.pve_keep_imports:
+                return
+            self.cfg.pve_keep_imports = enabled
+            updates = {"PVE_KEEP_IMPORTS": "1" if enabled else "0"}
         try:
-            write_keys(
-                self.cfg.env_file,
-                self.cfg.root / "config" / "lab.env.example",
-                {"LAB_PARALLEL": "1" if self.cfg.parallel else "0"},
-            )
+            write_keys(self.cfg.env_file, self.cfg.root / "config" / "lab.env.example", updates)
         except OSError:
             self.notify("Could not save that setting.", severity="error")
 
@@ -580,9 +802,38 @@ class LabApp(App[int]):
         self.cfg = load_config(self.cfg.root)
         box = self.query_one("#hv-settings", Vertical)
         box.border_title = _hypervisor_title(self.cfg.hypervisor)
-        await box.remove_children()
-        await box.mount(*list(self._hypervisor_rows(self._hv_fields())))
+        fields = self.query_one("#hv-fields", Vertical)
+        await fields.remove_children()
+        await fields.mount(*self._hv_mount_widgets())
         self._sync_actions()
+
+    def _ssh_login(self) -> tuple[str, str, str] | None:
+        host = self.cfg.pve_ssh_host.strip()
+        if not host and self.cfg.pve_api_host:
+            host = self.cfg.pve_api_host.split(":", 1)[0]
+        if not proxmox_ssh_user_ok(self.cfg.pve_ssh_user):
+            return None
+        if not host or not proxmox_ssh_host_ok(host) or not proxmox_ssh_port_ok(self.cfg.pve_ssh_port):
+            return None
+        return self.cfg.pve_ssh_user, host, self.cfg.pve_ssh_port
+
+    def _ask_for_ssh(self) -> SshSession | None:
+        """Ask once, before the first stage, and keep the password for this run."""
+        done = threading.Event()
+        holder: dict[str, SshSession | None] = {"session": None}
+
+        def open_dialog() -> None:
+            prompt = SshPrompt(self._ssh_login())
+
+            def finished(ok: bool | None) -> None:
+                holder["session"] = prompt.session if ok else None
+                done.set()
+
+            self.push_screen(prompt, finished)
+
+        self.call_from_thread(open_dialog)
+        done.wait()
+        return holder["session"]
 
     def _ask_for_mount_helper(self) -> MountHelper | None:
         """Ask once, before the run, and keep the helper for every mount."""
@@ -616,16 +867,27 @@ class LabApp(App[int]):
 
     def _execute(self, jobs: list[tuple[Stage, list[str]]]) -> None:
         helper: MountHelper | None = None
+        ssh: SshSession | None = None
         try:
+            if self.cfg.hypervisor == "proxmox" and any(stage.number >= 1 for stage, _args in jobs):
+                ssh = self._ask_for_ssh()
+                if ssh is None:
+                    if not self._cancel.is_set():
+                        self.call_from_thread(
+                            self._write,
+                            "The SSH password was not entered. Nothing was started.",
+                        )
+                    return
             if any(stage.needs_sudo for stage, _args in jobs):
                 mount_script = (
                     self.cfg.root / "scripts" / "hypervisors" / self.cfg.hypervisor / "guest-additions.sh"
                 )
                 if not mount_script.is_file():
-                    self.call_from_thread(
-                        self._write,
-                        "This platform does not mount a disk, so there is no administrator prompt.",
-                    )
+                    if self.cfg.hypervisor != "proxmox":
+                        self.call_from_thread(
+                            self._write,
+                            "This platform does not mount a disk, so there is no administrator prompt.",
+                        )
                 else:
                     helper = self._ask_for_mount_helper()
                 if helper is None and mount_script.is_file():
@@ -640,13 +902,18 @@ class LabApp(App[int]):
                     break
                 self.call_from_thread(self._mark_running, stage.number)
                 script = self.cfg.root / "scripts" / f"{stage.script}.sh"
+                extra: dict[str, str] = {}
+                if helper is not None:
+                    extra.update(helper.env)
+                if ssh is not None:
+                    extra.update(ssh.env)
                 rc = run_script(
                     self.cfg,
                     script,
                     args,
                     self._from_stage,
                     self._cancel.is_set,
-                    helper.env if helper is not None else None,
+                    extra or None,
                 )
                 if stage.number == 0:
                     ok = "Lab reset. Stages will run again from the start."
@@ -665,6 +932,8 @@ class LabApp(App[int]):
                     self.call_from_thread(self._write, bad)
                     break
         finally:
+            if ssh is not None:
+                ssh.stop()
             if helper is not None:
                 helper.stop()
             self.call_from_thread(self._finish)
@@ -753,11 +1022,15 @@ class LabApp(App[int]):
         if self._busy:
             self._cancel.set()
             self._write("Interrupt requested.")
-            if isinstance(self.screen, SudoPrompt):
+            if isinstance(self.screen, (SudoPrompt, SshPrompt)):
                 self.screen.dismiss(False)
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         button_id = event.button.id or ""
+        if button_id == "test-connection":
+            event.stop()
+            self.action_test_connection()
+            return
         if button_id.startswith("platform-"):
             event.stop()
             await self._show_hypervisor(button_id.removeprefix("platform-"))
@@ -772,6 +1045,76 @@ class LabApp(App[int]):
             return
         event.stop()
         action()
+
+    def action_test_connection(self) -> None:
+        if self._busy:
+            return
+        if not self._commit_form():
+            return
+        if self.cfg.hypervisor == "proxmox":
+            missing = missing_proxmox_settings(self.cfg)
+            if missing:
+                self.notify(
+                    "Set the Proxmox " + ", ".join(missing) + " before this check.",
+                    severity="warning",
+                )
+                return
+        script = self.cfg.root / "scripts" / "hypervisors" / self.cfg.hypervisor / "test-connection.sh"
+        if not script.is_file():
+            self.notify("This platform has no connection check.", severity="warning")
+            return
+        if self.cfg.hypervisor == "proxmox":
+            prompt = SshPrompt(self._ssh_login())
+
+            def finished(ok: bool | None) -> None:
+                if not ok or prompt.session is None:
+                    self._write("The SSH password was not entered. The connection was not checked.")
+                    return
+                self._begin_connection_check(script, prompt.session)
+
+            self.push_screen(prompt, finished)
+            return
+        self._begin_connection_check(script, None)
+
+    def _begin_connection_check(self, script: Path, ssh: SshSession | None) -> None:
+        self._busy = True
+        self._cancel.clear()
+        self._sync_actions()
+        self._write("Checking the connection.")
+        self.run_worker(lambda: self._test_connection(script, ssh), thread=True, exclusive=True)
+
+    def _test_connection(self, script: Path, ssh: SshSession | None = None) -> None:
+        ok = False
+        try:
+            rc = run_script(
+                self.cfg,
+                script,
+                [],
+                self._from_stage,
+                self._cancel.is_set,
+                ssh.env if ssh is not None else None,
+            )
+            ok = rc == 0 and not self._cancel.is_set()
+            if ok:
+                self.call_from_thread(self._write, "Connection ok.")
+            elif self._cancel.is_set():
+                self.call_from_thread(self._write, "Connection check interrupted.")
+            else:
+                self.call_from_thread(self._write, f"Connection check failed (exit {rc}).")
+        finally:
+            if ssh is not None:
+                ssh.stop()
+            self.call_from_thread(self._finish_test, ok)
+
+    def _finish_test(self, ok: bool) -> None:
+        self._busy = False
+        self._sync_actions()
+        if ok:
+            self.notify("Connection ok.")
+        elif self._cancel.is_set():
+            self.notify("Connection check interrupted.", severity="warning")
+        else:
+            self.notify("Connection check failed.", severity="error")
 
     def action_quit(self) -> None:
         if self._busy:
