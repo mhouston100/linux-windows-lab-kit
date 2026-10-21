@@ -156,6 +156,20 @@ load_config() {
   resolve_paths "$do_prompt"
 }
 
+require_virtio_iso() {
+  [[ "${HYPERVISOR:-virtualbox}" == "proxmox" ]] || return 0
+  if [[ -z "${PVE_VIRTIO_ISO:-}" ]]; then
+    die "Set PVE_VIRTIO_ISO to the virtio-win ISO you downloaded. The run has not started."
+  fi
+  if [[ ! -f "${PVE_VIRTIO_ISO}" ]]; then
+    die "Virtio ISO was not found: ${PVE_VIRTIO_ISO}. The run has not started."
+  fi
+  local lower="${PVE_VIRTIO_ISO,,}"
+  if [[ "$lower" != *.iso ]]; then
+    die "Virtio ISO must be a .iso file: ${PVE_VIRTIO_ISO}"
+  fi
+}
+
 require_lab_zip() {
   [[ -n "${LAB_ZIP_PATH}" ]] || die "LAB_ZIP_PATH is not set"
   [[ -f "${LAB_ZIP_PATH}" ]] || die "LAB_ZIP_PATH not found: ${LAB_ZIP_PATH}"

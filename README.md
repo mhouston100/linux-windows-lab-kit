@@ -10,7 +10,7 @@ Bash scripts that build a Windows lab on a Linux host from a Microsoft lab ZIP y
 - **It picks up where it stopped.** A finished step is skipped until you reset or pass `--force`. Reset removes this lab only. The ZIP and any other virtual machines stay.
 - **Platforms**
   - [VirtualBox](docs/virtualbox.md) — the backend that has built this lab
-  - [Proxmox](docs/proxmox.md) — API create, start, and stop. Disk images are copied with rsync. The guest agent is not planted in the disk yet
+  - [Proxmox](docs/proxmox.md) — API create, start, and stop. Disk images are copied with rsync. Download the virtio-win ISO and set Virtio ISO to that file. Every stage stops until the file exists. Stage 5 plants the QEMU guest agent from it
   - libvirt — pending
   - VMware Workstation — pending
 
@@ -47,7 +47,7 @@ Client VMs (domain-joined and workgroup Windows 11 machines built from `WindowsP
 
 The screen is a stack of titled boxes. Hypervisor choice is first, with VirtualBox in the first spot. The next box is that platform's settings. Under it are the lab settings: kit, work directory, domain, account, password, and Parallel disks. Fields you can change are text boxes. Fields you cannot change are plain text. Parallel disks is on unless you turn it off. It converts independent server disks at the same time. The machines still boot one after another. Leaving a field writes `config/lab.env`. A blank password keeps the current one, and the password is never shown. Progress for each stage stays on the screen, with Run all, Run next, Reset, and Quit underneath, then the live log. While a stage is running, the settings stay as they were when the stage started. The same lines are appended to `tmp/lab.log` under the work directory (default `/virtualmachines/tmp/lab.log`). That file stays when you quit and when you reset the lab. Interrupt a running stage and the menu comes back; the stage's marker is left unset, so the next run retries it.
 
-The menu asks for an administrator password only when the selected backend mounts a guest disk. VirtualBox does that for Guest Additions. Proxmox does not.
+The menu asks for an administrator password only when the selected backend mounts a guest disk on this machine. VirtualBox does that for Guest Additions. Proxmox plants the agent on the node over SSH, so the menu does not ask.
 
 From a shell without a terminal, `./scripts/lab.sh` prints the checklist and exits 0 only when every marker is present.
 

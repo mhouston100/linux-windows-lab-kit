@@ -415,9 +415,9 @@ pve_ssh_prepare() {
 
 pve_ssh_fill() {
   pve_ssh_prepare
-  PVE_SSH_CMD=(
-    ssh
-    -n
+  # ssh -n keeps a plain command from reading the topology loop. rsync must
+  # not use -n: that flag closes the stream the rsync protocol travels on.
+  local -a opts=(
     -p "$PVE_SSH_PORT"
     -o ConnectTimeout=20
     -o ServerAliveInterval=15
@@ -425,17 +425,19 @@ pve_ssh_fill() {
     -o StrictHostKeyChecking=accept-new
   )
   if [[ -n "${SSH_ASKPASS:-}" ]]; then
-    PVE_SSH_CMD+=(
+    opts+=(
       -o PreferredAuthentications=password
       -o NumberOfPasswordPrompts=1
       -o IdentitiesOnly=yes
     )
   else
-    PVE_SSH_CMD+=(-o BatchMode=yes)
+    opts+=(-o BatchMode=yes)
     if [[ -n "${PVE_SSH_IDENTITY:-}" ]]; then
-      PVE_SSH_CMD+=(-i "$PVE_SSH_IDENTITY" -o IdentitiesOnly=yes)
+      opts+=(-i "$PVE_SSH_IDENTITY" -o IdentitiesOnly=yes)
     fi
   fi
+  PVE_SSH_RSYNC_CMD=(ssh "${opts[@]}")
+  PVE_SSH_CMD=(ssh -n "${opts[@]}")
 }
 
 pve_ssh() {
@@ -446,7 +448,7 @@ pve_ssh() {
 pve_rsync_shell() {
   local part joined=""
   pve_ssh_fill
-  for part in "${PVE_SSH_CMD[@]}"; do
+  for part in "${PVE_SSH_RSYNC_CMD[@]}"; do
     joined+="$(printf '%q' "$part") "
   done
   joined="${joined% }"

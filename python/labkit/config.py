@@ -52,6 +52,7 @@ class LabConfig:
     pve_ssh_host: str = ""
     pve_ssh_port: str = ""
     pve_ssh_identity: str = ""
+    pve_virtio_iso: str = ""
 
     @property
     def markers_dir(self) -> Path:
@@ -172,6 +173,7 @@ def load_config(root: Path, kit: str | None = None, dest: str | None = None) -> 
         pve_ssh_host=values.get("PVE_SSH_HOST") or "",
         pve_ssh_port=values.get("PVE_SSH_PORT") or DEFAULT_PVE_SSH_PORT,
         pve_ssh_identity=values.get("PVE_SSH_IDENTITY") or "",
+        pve_virtio_iso=values.get("PVE_VIRTIO_ISO") or "",
     )
 
 
@@ -375,6 +377,13 @@ def hypervisor_fields(
                 True,
                 placeholder="Optional key. A menu run asks for the password",
             ),
+            HypervisorField(
+                "virtio-iso",
+                "Virtio ISO",
+                values.get("virtio_iso", ""),
+                True,
+                placeholder="virtio-win ISO downloaded on this machine",
+            ),
         ]
     return []
 
@@ -426,6 +435,27 @@ def proxmox_ssh_port_ok(value: str) -> bool:
     return 1 <= int(value) <= 65535
 
 
+def proxmox_virtio_iso_ok(value: str) -> bool:
+    """A blank field can be saved. A run still refuses to start until the file exists."""
+    if value == "":
+        return True
+    if any(ord(char) <= 32 or char in "\"'\\$`" for char in value):
+        return False
+    return value.lower().endswith(".iso") and Path(value).is_file()
+
+
+def virtio_iso_block(config: LabConfig) -> str:
+    """Stop a Proxmox run before any stage when the virtio-win ISO is missing."""
+    if config.hypervisor != "proxmox":
+        return ""
+    path = config.pve_virtio_iso.strip()
+    if not path:
+        return "Set Virtio ISO to the virtio-win ISO you downloaded. The run has not started."
+    if not proxmox_virtio_iso_ok(path):
+        return f"Virtio ISO was not found: {path}. The run has not started."
+    return ""
+
+
 def proxmox_ssh_identity_ok(value: str) -> bool:
     if value == "":
         return True
@@ -469,4 +499,6 @@ def missing_proxmox_settings(config: LabConfig) -> list[str]:
         missing.append("SSH port")
     if not proxmox_ssh_identity_ok(config.pve_ssh_identity):
         missing.append("SSH identity")
+    if not proxmox_virtio_iso_ok(config.pve_virtio_iso):
+        missing.append("Virtio ISO")
     return missing

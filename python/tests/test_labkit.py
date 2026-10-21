@@ -332,6 +332,8 @@ class ParallelTests(unittest.TestCase):
         self.assertTrue(proxmox["token-id"].editable)
         self.assertTrue(proxmox["token-secret"].secret)
         self.assertEqual(proxmox["token-secret"].value, "")
+        self.assertEqual(proxmox["virtio-iso"].value, "")
+        self.assertTrue(proxmox["virtio-iso"].editable)
 
 class CheckboxTests(unittest.IsolatedAsyncioTestCase):
     async def test_checkbox_starts_on_and_saves_when_cleared(self) -> None:
@@ -413,6 +415,8 @@ _FINGERPRINT = ":".join(["AB"] * 32)
 
 
 def _proxmox_env(work: Path) -> str:
+    iso = work.parent / "virtio-win.iso"
+    iso.write_bytes(b"iso")
     return (
         "HYPERVISOR=proxmox\n"
         f"LAB_WORK_DIR={work}\n"
@@ -424,6 +428,7 @@ def _proxmox_env(work: Path) -> str:
         "PVE_INTERNET_BRIDGE=vmbr1\n"
         "PVE_TOKEN_ID=labkit@pve!labkit\n"
         "PVE_TOKEN_SECRET=test-secret-value\n"
+        f"PVE_VIRTIO_ISO={iso}\n"
     )
 
 
@@ -445,6 +450,21 @@ class ProxmoxConfigTests(unittest.TestCase):
             self.assertNotIn("test-secret-value", summary)
             loaded.pve_token_secret = ""
             self.assertIn("token secret", missing_proxmox_settings(loaded))
+
+    def test_a_proxmox_run_stops_until_the_virtio_iso_exists(self) -> None:
+        from labkit.config import load_config, virtio_iso_block
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "config").mkdir()
+            env = _proxmox_env(root / "work")
+            (root / "config" / "lab.env").write_text(env, encoding="utf-8")
+            loaded = load_config(root)
+            self.assertEqual(virtio_iso_block(loaded), "")
+            loaded.pve_virtio_iso = ""
+            self.assertIn("The run has not started.", virtio_iso_block(loaded))
+            loaded.pve_virtio_iso = str(root / "missing.iso")
+            self.assertIn("was not found", virtio_iso_block(loaded))
 
     def test_missing_proxmox_keys_use_the_root_token(self) -> None:
         from labkit.config import load_config
@@ -702,6 +722,10 @@ class ProxmoxApiTests(unittest.TestCase):
         self.assertNotIn("test-secret-value", argv)
         self.assertIn("SECRET-IN-CONFIG", log)
         self.assertIn("SSH-N", log)
+        rsync_lines = [line for line in log.splitlines() if line.startswith("RSYNC")]
+        self.assertTrue(rsync_lines)
+        for line in rsync_lines:
+            self.assertNotIn("ssh -n", line)
 
     def test_remote_size_ignores_the_login_message(self) -> None:
         completed, _log = self._run_create("empty", stat_noise=True)
@@ -890,6 +914,39 @@ class ProxmoxApiTests(unittest.TestCase):
 
 
 class ProxmoxUiTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stage_one_does_not_start_without_the_virtio_iso(self) -> None:
+        from labkit import app as app_module
+        from labkit.app import LabApp
+
+        calls: list[str] = []
+
+        def fake_run(config, script, args, on_line, cancelled, extra_env=None) -> int:
+            calls.append(Path(script).name)
+            return 0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            work = root / "work"
+            config_dir = root / "config"
+            config_dir.mkdir()
+            text = "\n".join(
+                line for line in _proxmox_env(work).splitlines() if not line.startswith("PVE_VIRTIO_ISO=")
+            ) + "\n"
+            (config_dir / "lab.env").write_text(text, encoding="utf-8")
+            (config_dir / "lab.env.example").write_text(text, encoding="utf-8")
+            loaded = load_config(root)
+            original = app_module.run_script
+            app_module.run_script = fake_run
+            try:
+                app = LabApp(loaded, [])
+                async with app.run_test(size=(120, 60)) as pilot:
+                    await pilot.click("#run-next")
+                    await pilot.pause(0.3)
+            finally:
+                app_module.run_script = original
+            self.assertEqual(calls, [])
+            log_text = (work / "tmp" / "lab.log").read_text(encoding="utf-8")
+            self.assertIn("The run has not started.", log_text)
     async def test_proxmox_fields_replace_the_vm_directory(self) -> None:
         from textual.widgets import Input
 
@@ -1149,6 +1206,59 @@ class SshAuthTests(unittest.TestCase):
                     os.environ["PATH"] = old
         finally:
             session.stop()
+
+
+class GuestAgentTests(unittest.TestCase):
+    def test_server_2025_driver_directory_wins(self) -> None:
+        script = Path(__file__).resolve().parents[2] / "scripts" / "hypervisors" / "proxmox" / "guest-agent.sh"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for rel in ("vioser/w11/amd64", "vioserial/w11/amd64", "vioserial/2k25/amd64"):
+                (root / rel).mkdir(parents=True)
+            (root / "vioser/w11/amd64/vioser.inf").write_text("legacy\n", encoding="utf-8")
+            (root / "vioserial/w11/amd64/vioser.inf").write_text("", encoding="utf-8")
+            (root / "vioserial/2k25/amd64/vioser.inf").write_text("server\n", encoding="utf-8")
+            completed = subprocess.run(
+                ["bash", "-c", f'source "{script}"; pve_ga_driver_rel "{root}"'],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.stdout.strip(), "vioserial/2k25/amd64")
+
+    def test_install_script_plants_the_agent_and_clears_autologon(self) -> None:
+        text = (
+            Path(__file__).resolve().parents[2]
+            / "scripts"
+            / "hypervisors"
+            / "proxmox"
+            / "install-guest-agent.ps1"
+        ).read_text(encoding="utf-8")
+        self.assertIn("qemu-ga-x86_64.msi", text)
+        self.assertIn("vioser.inf", text)
+        self.assertIn("AutoAdminLogon", text)
+        self.assertIn("DefaultPassword", text)
+
+    def test_each_stage_script_checks_the_virtio_iso_before_work(self) -> None:
+        repo = Path(__file__).resolve().parents[2]
+        for number in range(1, 7):
+            text = (repo / "scripts" / f"phase{number}.sh").read_text(encoding="utf-8")
+            self.assertIn("require_virtio_iso", text)
+        with tempfile.TemporaryDirectory() as tmp:
+            completed = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    f'source "{repo}/scripts/lib/config.sh"; HYPERVISOR=proxmox; PVE_VIRTIO_ISO=; require_virtio_iso',
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                cwd=tmp,
+            )
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("The run has not started.", completed.stderr)
 
 
 class ClipboardTests(unittest.TestCase):

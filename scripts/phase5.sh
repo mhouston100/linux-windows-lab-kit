@@ -43,6 +43,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 load_config 0
+require_virtio_iso
 log "Phase 5 — Lab control / ordered start-stop"
 log "This step powers the VMs on, then stops them."
 print_checklist

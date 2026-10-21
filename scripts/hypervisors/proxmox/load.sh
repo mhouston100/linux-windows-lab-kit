@@ -9,6 +9,8 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/prereqs.sh"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/api.sh"
 # shellcheck source=verify.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/verify.sh"
+# shellcheck source=guest-agent.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/guest-agent.sh"
 
 hv_disk_format() {
   printf '%s\n' qcow2

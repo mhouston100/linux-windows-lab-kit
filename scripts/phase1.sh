@@ -57,6 +57,7 @@ if [[ "$PROMPT_EXPLICIT" -eq 0 && -n "${LAB_CLI_KIT:-}${LAB_CLI_DEST:-}" ]]; the
 fi
 
 load_config "$PROMPT"
+require_virtio_iso
 
 log "Phase 1 — Extraction and organization"
 print_checklist

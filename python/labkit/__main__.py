@@ -7,7 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from labkit.config import LabConfig, ensure_saved_defaults, load_config
+from labkit.config import LabConfig, ensure_saved_defaults, load_config, virtio_iso_block
 from labkit.runner import run_script, stage_args
 from labkit.stages import STAGES, marker_present, stage_by_number, stages_to_run
 
@@ -39,6 +39,11 @@ exit 1
 
 
 def _run_blocking(config: LabConfig, jobs: list, forward: list[str]) -> int:
+    blocked = virtio_iso_block(config)
+    if blocked:
+        print(blocked, file=sys.stderr)
+        return 1
+
     def on_line(line: str) -> None:
         print(line, flush=True)
 

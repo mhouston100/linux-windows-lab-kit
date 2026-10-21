@@ -94,6 +94,8 @@ cmd_start() {
       continue
     fi
     vmid="$(vm_vmid "$name")"
+    pve_plant_agent "$name"
+    state="$(hv_vm_state "$name")"
     started="$(date +%s)"
     if [[ "$state" != "running" ]]; then
       log "Starting $name (order=${ORDERS[$i]})"

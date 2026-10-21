@@ -32,6 +32,8 @@ from labkit.config import (
     proxmox_ssh_port_ok,
     proxmox_ssh_user_ok,
     proxmox_token_ok,
+    proxmox_virtio_iso_ok,
+    virtio_iso_block,
     write_keys,
 )
 from labkit.runner import run_script, stage_args
@@ -400,6 +402,7 @@ class LabApp(App[int]):
                 "ssh_host": self.cfg.pve_ssh_host,
                 "ssh_port": self.cfg.pve_ssh_port,
                 "ssh_identity": self.cfg.pve_ssh_identity,
+                "virtio_iso": self.cfg.pve_virtio_iso,
             },
         )
 
@@ -598,6 +601,7 @@ class LabApp(App[int]):
             "hv-ssh-host",
             "hv-ssh-port",
             "hv-ssh-identity",
+            "hv-virtio-iso",
         }:
             return True
         updates: dict[str, str] = {}
@@ -639,7 +643,7 @@ class LabApp(App[int]):
                 self.query_one("#hv-ga-iso", Input).value = self.cfg.guest_additions_iso
                 return False
             updates["VBOX_GUEST_ADDITIONS_ISO"] = iso
-        elif field_id in {"hv-ssh-user", "hv-ssh-host", "hv-ssh-port", "hv-ssh-identity"}:
+        elif field_id in {"hv-ssh-user", "hv-ssh-host", "hv-ssh-port", "hv-ssh-identity", "hv-virtio-iso"}:
             if not self._save_ssh(field_id, updates):
                 return False
         elif field_id == "hv-token-secret":
@@ -724,6 +728,12 @@ class LabApp(App[int]):
                 "SSH identity must be a key file, or blank to use the default key.",
                 proxmox_ssh_identity_ok,
             ),
+            "hv-virtio-iso": (
+                "PVE_VIRTIO_ISO",
+                self.cfg.pve_virtio_iso,
+                "Virtio ISO must be a .iso file on this machine.",
+                proxmox_virtio_iso_ok,
+            ),
         }[field_id]
         widget = self.query_one(f"#{field_id}", Input)
         value = widget.value.strip()
@@ -756,6 +766,7 @@ class LabApp(App[int]):
                 "hv-ssh-host",
                 "hv-ssh-port",
                 "hv-ssh-identity",
+                "hv-virtio-iso",
             ))
         for field_id in fields:
             if not self._save_field(field_id):
@@ -960,7 +971,7 @@ class LabApp(App[int]):
         if reason:
             self._write(reason)
             return
-        blocked = self._proxmox_block([(stage, [])])
+        blocked = virtio_iso_block(self.cfg) or self._proxmox_block([(stage, [])])
         if blocked:
             self._write(blocked)
             return
@@ -979,7 +990,7 @@ class LabApp(App[int]):
         if not chosen:
             self._write("Run all finished.")
             return
-        blocked_settings = self._proxmox_block([(stage, []) for stage in chosen])
+        blocked_settings = virtio_iso_block(self.cfg) or self._proxmox_block([(stage, []) for stage in chosen])
         if blocked_settings:
             self._write(blocked_settings)
             return

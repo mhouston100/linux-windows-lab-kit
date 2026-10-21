@@ -4,7 +4,7 @@ Proxmox is a second backend beside VirtualBox. The menu, the six stages, and the
 
 > **Use root.** The menu defaults to `root@pam!root` and SSH user `root`. A large disk upload through the API fails. pveproxy writes the whole file under `/var/tmp` and logs `multipart upload complete`, then allows 5 seconds for the hand-off that creates the import task. A 26 GB file finishes in that window. A 54 GB file does not: the worker logs `Connection timed out`, exits, and the client gets curl error 52 with no HTTP response. There is no setting for that timer. The kit copies each qcow2 with rsync over SSH into the import directory from the storage record, then the API imports that file onto the guest disk. rsync keeps a partial file. The same run tries the copy again, and a later run continues it. The menu asks for the SSH password before Test connection and before the first stage of a run. It is not stored. A user you create still needs the API roles below, plus an SSH login and write permission on that import directory. The API roles do not grant that write.
 
-The code is in the tree and covered by unit tests against a fake API. A live run created the first guest, then the 54 GB API upload hit the timeout above. The copy is now rsync. Stage 5 waits for the QEMU guest agent, and that agent is not planted in the disk, so a full start stops there.
+The code is in the tree and covered by unit tests against a fake API. A live run created the guests after the copy moved to rsync. Stage 5 plants the virtio-serial driver and the QEMU guest agent on the disk before it waits for the agent to answer.
 
 `HYPERVISOR=proxmox` selects `scripts/hypervisors/proxmox/` and `config/hypervisors/proxmox/`.
 
@@ -30,6 +30,7 @@ Choosing Proxmox replaces the VM directory with these fields. They are saved in 
 | `PVE_SSH_HOST` | SSH address. Blank uses the API host without its port |
 | `PVE_SSH_PORT` | SSH port. Default `22` |
 | `PVE_SSH_IDENTITY` | Optional private key for a shell run outside the menu. A menu run asks for the SSH password instead |
+| `PVE_VIRTIO_ISO` | virtio-win ISO downloaded on this machine. Every stage stops until this file exists |
 | `PVE_AGENT_WAIT` | Seconds to wait for the guest agent. Default 1800 |
 
 Disk format is qcow2. The field is visible and locked. Guest ids and VMIDs are in `config/hypervisors/proxmox/guests.tsv`: HYD-DC1 is 9101, HYD-CM1 is 9102, HYD-GW1 is 9103. Change those numbers before the first create if the cluster already uses them.
@@ -162,7 +163,7 @@ Stage 3 checks free space, then creates each VM. It copies that guest's qcow2 wi
 
 rsync writes straight to that directory. It does not stage the file under `/var/tmp`. `--partial` leaves an unfinished file in place, and `--append-verify` continues it. A dropped connection is tried up to five times in the same run. The next stage 3 continues the same file when the remote size is still short. A remote file that is already the same size is left as it is. A remote file that is longer is removed and copied again.
 
-Each guest is OVMF on machine `q35`, with an EFI disk and e1000 NICs, so the Hyper-V image can boot before virtio drivers exist. CorpNet is `PVE_BRIDGE`. The gateway's second NIC is `PVE_INTERNET_BRIDGE`. There is no VirtualBox-style NAT device. Memory and CPU come from `config/topology.tsv`. The guest agent flag is turned on in the VM config. The agent program is not copied into the disk.
+Each guest is OVMF on machine `q35`, with an EFI disk and e1000 NICs, so the Hyper-V image can boot before virtio storage or network drivers exist. CorpNet is `PVE_BRIDGE`. The gateway's second NIC is `PVE_INTERNET_BRIDGE`. There is no VirtualBox-style NAT device. Memory and CPU come from `config/topology.tsv`. The guest agent flag is turned on in the VM config.
 
 If the name already exists on the node with the expected VMID and a SATA disk, creation is skipped. `--force` deletes that guest and creates it again. A VMID that belongs to a different name is left alone.
 
@@ -170,7 +171,7 @@ Stage 3 on its own powers the gateway on and then off. It does not wait for the 
 
 ## Start, health, and reset
 
-`start` boots DC, then CM, then the gateway, and polls the QEMU guest agent. The default wait is 30 minutes. Until the agent is planted, that wait ends with a failure. `--no-wait` skips the settle time in `boot-order.tsv` and still waits for the agent.
+`start` plants the QEMU guest agent, then boots DC, then CM, then the gateway, and polls the agent. The plant copies `PVE_VIRTIO_ISO` to the node, stops the guest if it is running, mounts the `sata0` volume, and copies the virtio-serial driver and `qemu-ga-x86_64.msi` to `C:\Windows\Temp\pve-ga`. It sets a one-shot LabAdmin autologon and a RunOnce entry. The first logon runs `install-guest-agent.ps1`, which installs the driver and the agent, clears the stored password, and reboots. The disk and NIC stay SATA and e1000. Download that ISO yourself and set Virtio ISO to the file. Stage 1 through stage 6 stop before any work when the path is blank or the file is missing. The default wait is 30 minutes. `--no-wait` skips the settle time in `boot-order.tsv` and still waits for the agent.
 
 Stop sends an ACPI shutdown, then a hard stop if the guest is still up after about 45 seconds.
 
