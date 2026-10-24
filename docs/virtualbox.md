@@ -22,7 +22,7 @@ Disk format is VDI. The field is visible and locked. Guest OS ids are in `config
 | `VBoxManage` | Create, start, stop, and inspect the lab VMs |
 | `qemu-nbd`, `ntfs-3g` | Mount a guest disk to plant Guest Additions |
 
-The menu asks for the administrator password once, before a run that includes stage 3 or stage 5. The password is sent only to sudo, then dropped. It is not stored, and it is not the lab account password. A root helper then accepts only the disk-mount commands for the rest of that run.
+The menu asks for your sudo password on this computer once, before a run that includes stage 3 or stage 5. The password is sent only to sudo, then dropped. It is not stored, and it is not the lab account password. A root helper then accepts only the disk-mount commands for the rest of that run.
 
 ## Networks and disks
 

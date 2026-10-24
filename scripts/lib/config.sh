@@ -125,9 +125,12 @@ resolve_paths() {
   : "${HYPERVISOR:=virtualbox}"
   : "${LAB_PREFIX:=HYD}"
   : "${LAB_NETWORK_NAME:=CorpNet}"
-  : "${LAB_ADMIN_USER:=LabAdmin}"
-  : "${LAB_ADMIN_PASSWORD:=}"
-  : "${LAB_DOMAIN:=Corp}"
+  # The kit ships with this account and its credentials cached on every guest.
+  # They cannot change, so they are fixed here and lab.env and the environment
+  # do not override them. python/labkit/config.py names the same account.
+  LAB_ADMIN_USER="LabAdmin"
+  LAB_ADMIN_PASSWORD="P@ssw0rd"
+  LAB_DOMAIN="Corp"
 
   apply_derived_paths
 

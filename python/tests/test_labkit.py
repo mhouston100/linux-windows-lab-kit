@@ -72,7 +72,6 @@ class EnvTests(unittest.TestCase):
             )
             loaded = load_config(root)
             self.assertEqual(loaded.guest_additions_iso, "/opt/custom/VBoxGuestAdditions.iso")
-            self.assertEqual(loaded.lab_domain, "Corp")
 
     def test_first_start_writes_missing_defaults_and_keeps_saved_lines(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -172,9 +171,6 @@ class RunnerTests(unittest.TestCase):
                 hypervisor="virtualbox",
                 lab_prefix="HYD",
                 lab_network_name="CorpNet",
-                lab_admin_user="LabAdmin",
-                lab_admin_password="secret",
-                lab_domain="Corp",
             )
             lines: list[str] = []
             rc = run_script(config, script, [], lines.append, lambda: False)
@@ -197,9 +193,6 @@ class RunnerTests(unittest.TestCase):
                 hypervisor="virtualbox",
                 lab_prefix="HYD",
                 lab_network_name="CorpNet",
-                lab_admin_user="LabAdmin",
-                lab_admin_password="secret",
-                lab_domain="Corp",
             )
             cancel = threading.Event()
 
@@ -698,7 +691,7 @@ class ProxmoxApiTests(unittest.TestCase):
             if stat_noise:
                 env["FAKE_PVE_STAT_NOISE"] = "1"
             completed = subprocess.run(
-                ["bash", str(repo / "scripts" / "hypervisors" / "proxmox" / "create-vms.sh"), "--no-prompt", "--no-smoke"],
+                ["bash", str(repo / "scripts" / "hypervisors" / "proxmox" / "create-vms.sh"), "--no-prompt", "--no-smoke", "--no-plant"],
                 capture_output=True,
                 text=True,
                 timeout=30,
@@ -827,7 +820,7 @@ class ProxmoxApiTests(unittest.TestCase):
             )
             recorded = log.read_text(encoding="utf-8")
             self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
-            self.assertIn("not checked", completed.stdout)
+            self.assertIn("not checked", completed.stderr)
             self.assertIn("INSECURE", recorded)
             self.assertIn("SECRET-IN-CONFIG", recorded)
             self.assertNotIn("CACERT", recorded)
@@ -1041,6 +1034,8 @@ class ProxmoxUiTests(unittest.IsolatedAsyncioTestCase):
             config_dir.mkdir()
             backend = root / "scripts" / "hypervisors" / "proxmox"
             backend.mkdir(parents=True)
+            (root / "scripts" / "lib").mkdir(parents=True)
+            (root / "scripts" / "lib" / "offline-disk.sh").write_text("# test\n", encoding="utf-8")
             (backend / "load.sh").write_text("# test\n", encoding="utf-8")
             (backend / "test-connection.sh").write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
             env = config_dir / "lab.env"
@@ -1058,23 +1053,41 @@ class ProxmoxUiTests(unittest.IsolatedAsyncioTestCase):
                 app = LabApp(loaded, [])
                 async with app.run_test(size=(120, 60)) as pilot:
                     self.assertEqual(str(app.query_one("#run-next").label), "Run Next (Stage 3)")
-                    with patch("labkit.app.login_error", return_value=None):
+                    class FakeHelper:
+                        env = {"GA_ROOT_DIR": "/nowhere", "GA_PRIV_HOLD": "1"}
+                        stopped = False
+
+                        def stop(self) -> None:
+                            FakeHelper.stopped = True
+
+                    with (
+                        patch("labkit.app.login_error", return_value=None),
+                        patch("labkit.app.start_mount_helper", return_value=FakeHelper()),
+                    ):
                         await pilot.click("#run-next")
                         await pilot.pause(0.3)
                         self.assertIsInstance(app.screen, SshPrompt)
-                        self.assertNotIsInstance(app.screen, SudoPrompt)
                         self.assertEqual(calls, [])
                         app.screen.query_one("#ssh-password", Input).value = "ssh-secret"
                         await pilot.click("#ssh-continue")
                         await pilot.pause(0.5)
-                    self.assertNotIsInstance(app.screen, SshPrompt)
+                        # Stage 3 mounts each disk to plant the guest agent, so root is asked once.
+                        self.assertIsInstance(app.screen, SudoPrompt)
+                        self.assertEqual(calls, [])
+                        app.screen.query_one("#sudo-password", Input).value = "root-secret"
+                        await pilot.click("#sudo-continue")
+                        await pilot.pause(0.5)
+                    self.assertNotIsInstance(app.screen, (SshPrompt, SudoPrompt))
+                    self.assertTrue(FakeHelper.stopped)
             finally:
                 app_module.run_script = original
             self.assertEqual(calls, ["phase3.sh"])
             self.assertIsNotNone(passed[0])
             assert passed[0] is not None
             self.assertIn("SSH_ASKPASS", passed[0])
+            self.assertEqual(passed[0].get("GA_ROOT_DIR"), "/nowhere")
             self.assertNotIn("ssh-secret", " ".join(passed[0].values()))
+            self.assertNotIn("root-secret", " ".join(passed[0].values()))
             self.assertNotIn("ssh-secret", env.read_text(encoding="utf-8"))
             self.assertFalse(Path(passed[0]["SSH_ASKPASS"]).exists())
 
@@ -1209,25 +1222,35 @@ class SshAuthTests(unittest.TestCase):
 
 
 class GuestAgentTests(unittest.TestCase):
-    def test_server_2025_driver_directory_wins(self) -> None:
+    def test_iso_listing_keeps_the_driver_and_skips_the_debug_file(self) -> None:
         script = Path(__file__).resolve().parents[2] / "scripts" / "hypervisors" / "proxmox" / "guest-agent.sh"
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            for rel in ("vioser/w11/amd64", "vioserial/w11/amd64", "vioserial/2k25/amd64"):
-                (root / rel).mkdir(parents=True)
-            (root / "vioser/w11/amd64/vioser.inf").write_text("legacy\n", encoding="utf-8")
-            (root / "vioserial/w11/amd64/vioser.inf").write_text("", encoding="utf-8")
-            (root / "vioserial/2k25/amd64/vioser.inf").write_text("server\n", encoding="utf-8")
-            completed = subprocess.run(
-                ["bash", "-c", f'source "{script}"; pve_ga_driver_rel "{root}"'],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
+        listing = "\n".join((
+            "-r-xr-xr-x  2 0 0 0 Jan 13  2025 vioserial/w11/amd64/vioser.inf link to vioserial/2k25/amd64/vioser.inf",
+            "-r-xr-xr-x  2 0 0 2623 Jan 13  2025 vioserial/2k25/amd64/vioser.inf",
+            "-r-xr-xr-x  2 0 0 92312 Jan 30  2025 vioserial/2k25/amd64/vioser.sys",
+            "-r-xr-xr-x  2 0 0 12066 Jan 30  2025 vioserial/2k25/amd64/vioser.cat",
+            "-r-xr-xr-x  2 0 0 1257472 Jan 14  2025 vioserial/2k25/amd64/vioser.pdb",
+            "-r--r--r--  1 0 0 11770368 Jan 20  2025 guest-agent/qemu-ga-x86_64.msi",
+        ))
+        completed = subprocess.run(
+            ["bash", "-c", f'source "{script}"; pve_ga_pick_from_listing'],
+            input=listing + "\n",
+            capture_output=True,
+            text=True,
+            check=False,
+        )
         self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertEqual(completed.stdout.strip(), "vioserial/2k25/amd64")
+        self.assertEqual(
+            completed.stdout.splitlines(),
+            [
+                "vioserial/2k25/amd64/vioser.cat",
+                "vioserial/2k25/amd64/vioser.inf",
+                "vioserial/2k25/amd64/vioser.sys",
+                "guest-agent/qemu-ga-x86_64.msi",
+            ],
+        )
 
-    def test_install_script_plants_the_agent_and_clears_autologon(self) -> None:
+    def test_install_script_installs_the_agent_and_clears_autologon(self) -> None:
         text = (
             Path(__file__).resolve().parents[2]
             / "scripts"
@@ -1239,6 +1262,206 @@ class GuestAgentTests(unittest.TestCase):
         self.assertIn("vioser.inf", text)
         self.assertIn("AutoAdminLogon", text)
         self.assertIn("DefaultPassword", text)
+        self.assertNotIn("Remove-PveStartupHook", text)
+
+    def test_registry_records_set_runonce_and_a_one_shot_autologon(self) -> None:
+        repo = Path(__file__).resolve().parents[2]
+        script = (
+            f'source "{repo}/scripts/hypervisors/proxmox/guest-agent.sh"; '
+            "pve_ga_registry_records LabAdmin Corp 'p w'"
+        )
+        completed = subprocess.run(["bash", "-c", script], capture_output=True, check=False)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        fields = completed.stdout.split(b"\0")
+        self.assertEqual(fields.pop(), b"")
+        self.assertEqual(len(fields) % 4, 0)
+        records = {
+            (fields[i].decode(), fields[i + 1].decode()): (fields[i + 2].decode(), fields[i + 3].decode())
+            for i in range(0, len(fields), 4)
+        }
+        run_once = r"Microsoft\Windows\CurrentVersion\RunOnce"
+        winlogon = r"Microsoft\Windows NT\CurrentVersion\Winlogon"
+        self.assertIn("install-guest-agent.ps1", records[(run_once, "PveGuestAgent")][1])
+        self.assertEqual(records[(winlogon, "AutoAdminLogon")], ("sz", "1"))
+        self.assertEqual(records[(winlogon, "DefaultUserName")], ("sz", "LabAdmin"))
+        self.assertEqual(records[(winlogon, "DefaultDomainName")], ("sz", "Corp"))
+        self.assertEqual(records[(winlogon, "DefaultPassword")], ("sz", "p w"))
+        self.assertEqual(records[(winlogon, "AutoLogonCount")], ("dword", "1"))
+
+    def test_runtime_directory_is_reused_and_the_blank_pin_note_is_not_on_stdout(self) -> None:
+        repo = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = os.environ.copy()
+            env["TMPDIR"] = str(root)
+            script = (
+                f"source '{repo}/scripts/lib/common.sh'\n"
+                f"source '{repo}/scripts/hypervisors/proxmox/api.sh'\n"
+                "PVE_API_HOST=pve.example:8006; PVE_TLS_FINGERPRINT=; PVE_NODE=pve\n"
+                "PVE_STORAGE=local; PVE_BRIDGE=vmbr0; PVE_INTERNET_BRIDGE=vmbr1\n"
+                "PVE_TOKEN_ID=labkit@pve!labkit; PVE_TOKEN_SECRET=x\n"
+                "pve_prepare 2>/dev/null\n"
+                "for i in 1 2 3; do out=\"$(pve_prepare 2>/dev/null)\"; [[ -z \"$out\" ]] || exit 3; done\n"
+            )
+            completed = subprocess.run(
+                ["bash", "-c", script], capture_output=True, text=True, timeout=15, env=env, check=False
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
+            self.assertEqual(len(list(root.glob("lab-pve.*"))), 1)
+            self.assertEqual(completed.stdout.count("TLS fingerprint is blank"), 0)
+
+    def test_hold_patterns_are_per_guest_and_can_be_switched_off(self) -> None:
+        repo = Path(__file__).resolve().parents[2]
+
+        def patterns(guest: str, hold: str) -> list[str]:
+            completed = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    f'ROOT_DIR="{repo}"; PVE_HOLD={hold}; '
+                    f'source "{repo}/scripts/hypervisors/proxmox/guest-agent.sh"; pve_ga_hold_patterns {guest}',
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            return completed.stdout.split()
+
+        cm = patterns("HYD-CM1", "1")
+        self.assertIn("^MSSQL", cm)
+        self.assertIn("^SMS_", cm)
+        self.assertEqual(patterns("HYD-DC1", "1"), [])
+        self.assertEqual(patterns("HYD-CM1", "0"), [])
+
+    def test_hive_tool_holds_only_matching_automatic_services(self) -> None:
+        repo = Path(__file__).resolve().parents[2]
+        dll = repo / "tools" / "HiveSet" / "bin" / "Release" / "net10.0" / "HiveSet.dll"
+        if not dll.is_file():
+            self.skipTest("HiveSet is not built")
+        completed = subprocess.run(
+            ["dotnet", str(dll), "--self-test"], capture_output=True, text=True, timeout=60, check=False
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("hive self-test ok", completed.stdout)
+
+    def test_agent_exec_runs_the_program_and_returns_its_output(self) -> None:
+        repo = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            log = root / "curl.log"
+            fake = root / "curl"
+            fake.write_text(
+                "#!/bin/bash\n"
+                f"log={log}\n"
+                "printf 'ARGV' >>\"$log\"; for a in \"$@\"; do printf ' %s' \"$a\" >>\"$log\"; done; printf '\\n' >>\"$log\"\n"
+                "cfg=''; out=''; args=(\"$@\"); i=0\n"
+                "while [[ $i -lt ${#args[@]} ]]; do\n"
+                "  case \"${args[$i]}\" in --config) i=$((i+1)); cfg=\"${args[$i]}\";; --output) i=$((i+1)); out=\"${args[$i]}\";; esac\n"
+                "  i=$((i+1))\n"
+                "done\n"
+                "if grep -q 'exec-status' \"$cfg\"; then\n"
+                "  body='{\"data\":{\"exited\":1,\"exitcode\":3,\"out-data\":\"Restored 2 services, 1 did not start.\\n\"}}'\n"
+                "else\n"
+                "  body='{\"data\":{\"pid\":42}}'\n"
+                "fi\n"
+                "printf '%s' \"$body\" >\"$out\"; printf 200\n",
+                encoding="utf-8",
+            )
+            fake.chmod(0o755)
+            env = os.environ.copy()
+            env["TMPDIR"] = str(root)
+            env["PVE_CURL"] = str(fake)
+            script = (
+                f"source '{repo}/scripts/lib/common.sh'\n"
+                f"source '{repo}/scripts/hypervisors/proxmox/api.sh'\n"
+                "PVE_API_HOST=pve.example:8006; PVE_TLS_FINGERPRINT=; PVE_NODE=pve\n"
+                "PVE_STORAGE=local; PVE_BRIDGE=vmbr0; PVE_INTERNET_BRIDGE=vmbr1\n"
+                "PVE_TOKEN_ID=labkit@pve!labkit; PVE_TOKEN_SECRET=x\n"
+                "set +e\n"
+                "out=\"$(pve_agent_exec 9102 30 powershell.exe -File 'C:\\a b.ps1' 2>/dev/null)\"; rc=$?\n"
+                "printf '%s|%s' \"$rc\" \"$out\"\n"
+            )
+            completed = subprocess.run(
+                ["bash", "-c", script], capture_output=True, text=True, timeout=30, env=env, check=False
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(completed.stdout, "3|Restored 2 services, 1 did not start.")
+            recorded = log.read_text(encoding="utf-8")
+            self.assertIn("--data-urlencode command=powershell.exe", recorded)
+            self.assertIn("--data-urlencode command=-File", recorded)
+            self.assertEqual(recorded.count("ARGV"), 2)
+
+    def test_restore_script_reads_the_saved_start_types(self) -> None:
+        text = (
+            Path(__file__).resolve().parents[2]
+            / "scripts"
+            / "hypervisors"
+            / "proxmox"
+            / "restore-held-services.ps1"
+        ).read_text(encoding="utf-8")
+        self.assertIn("held-services.tsv", text)
+        self.assertIn("-Name 'Start'", text)
+        self.assertIn("Start-Service", text)
+
+    def test_the_kit_account_is_fixed_and_lab_env_cannot_change_it(self) -> None:
+        repo = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as tmp:
+            env_file = Path(tmp) / "lab.env"
+            env_file.write_text(
+                "LAB_ADMIN_USER=Other\nLAB_ADMIN_PASSWORD=stale-value\nLAB_DOMAIN=Elsewhere\n",
+                encoding="utf-8",
+            )
+            env = os.environ.copy()
+            env["LAB_ENV_FILE"] = str(env_file)
+            env["LAB_ADMIN_PASSWORD"] = "from-environment"
+            completed = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    f'source "{repo}/scripts/lib/config.sh"; load_config 0 >/dev/null 2>&1; '
+                    'printf "%s|%s|%s" "$LAB_DOMAIN" "$LAB_ADMIN_USER" "$LAB_ADMIN_PASSWORD"',
+                ],
+                capture_output=True,
+                text=True,
+                env=env,
+                cwd=tmp,
+                check=False,
+            )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.stdout, "Corp|LabAdmin|P@ssw0rd")
+
+    def test_agent_wait_needs_a_steady_agent(self) -> None:
+        text = (
+            Path(__file__).resolve().parents[2] / "scripts" / "hypervisors" / "proxmox" / "api.sh"
+        ).read_text(encoding="utf-8")
+        wait = text.split("pve_wait_agent()", 1)[1].split("pve_read_storage()", 1)[0]
+        self.assertIn("PVE_AGENT_STABLE", wait)
+        self.assertIn("stopped answering", wait)
+        self.assertIn("install.log", wait)
+
+    def test_task_poll_waits_twenty_seconds_and_retries(self) -> None:
+        text = (
+            Path(__file__).resolve().parents[2] / "scripts" / "hypervisors" / "proxmox" / "api.sh"
+        ).read_text(encoding="utf-8")
+        wait = text.split("pve_wait_task()", 1)[1].split("pve_follow()", 1)[0]
+        soft = text.split("pve_call()", 1)[1].split("pve_expect()", 1)[0]
+        self.assertIn("PVE_CALL_SOFT", wait)
+        self.assertIn("of 6", wait)
+        self.assertIn('-ge 6', wait)
+        self.assertIn("pause=$((20 - (now - began)))", wait)
+        self.assertNotIn("sleep 2", wait)
+        self.assertIn("2 minutes", wait)
+        self.assertIn('[[ "${PVE_CALL_SOFT:-}" == 1 ]]', soft)
+        self.assertIn("return 1", soft)
+
+    def test_agent_ping_uses_post(self) -> None:
+        text = (
+            Path(__file__).resolve().parents[2] / "scripts" / "hypervisors" / "proxmox" / "api.sh"
+        ).read_text(encoding="utf-8")
+        ready = text.split("pve_agent_ready()", 1)[1].split("pve_wait_agent()", 1)[0]
+        self.assertIn('POST "/nodes/$(pve_quote "$PVE_NODE")/qemu/${vmid}/agent/ping"', ready)
+        self.assertNotIn("pve_call GET", ready)
 
     def test_each_stage_script_checks_the_virtio_iso_before_work(self) -> None:
         repo = Path(__file__).resolve().parents[2]

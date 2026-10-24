@@ -25,9 +25,12 @@ Commands:
   status              Show state for each lab VM
   health              status + disk and bridge checks
   list                List topology VMs and boot order
+  restore-services    Turn the services disabled on the disk (hold-services.tsv)
+                      back on in every running guest, then start them
 
 Options:
-  --no-wait           Do not apply the settle time between starts
+  --no-wait           Do not apply the settle time between starts. The settle time
+                      counts from the moment the QEMU guest agent answers steadily
   --boot-order FILE   Override config/boot-order.tsv
 EOF
 }
@@ -94,9 +97,6 @@ cmd_start() {
       continue
     fi
     vmid="$(vm_vmid "$name")"
-    pve_plant_agent "$name"
-    state="$(hv_vm_state "$name")"
-    started="$(date +%s)"
     if [[ "$state" != "running" ]]; then
       log "Starting $name (order=${ORDERS[$i]})"
       pve_power "$vmid" start
@@ -104,6 +104,10 @@ cmd_start() {
       log "$name already running"
     fi
     pve_wait_agent "$name" "$vmid"
+    # The settle time counts from the steady agent. On the first start the
+    # guest restarts once after the agent first answers, and a guest that
+    # needs this one (a domain controller) has to be back before the next starts.
+    started="$(date +%s)"
     if [[ "$WAIT" -eq 1 ]]; then
       w="${WAITSECS[$i]}"
       if [[ "$w" -gt 0 ]]; then
@@ -139,21 +143,55 @@ cmd_stop() {
     vmid="$(vm_vmid "$name")"
     log "Powering off $name"
     pve_power_try "$vmid" shutdown || true
+    # SQL Server and Configuration Manager on a small guest can take minutes to
+    # stop. A hard stop in the middle risks the databases, so the wait is long.
     t=0
-    while [[ $t -lt 45 ]]; do
+    while [[ $t -lt "${PVE_STOP_WAIT:-300}" ]]; do
       state="$(hv_vm_state "$name")"
       [[ "$state" == "poweroff" ]] && break
-      sleep 1
-      t=$((t+1))
+      sleep 2
+      t=$((t+2))
+      if (( t % 60 == 0 )); then
+        log "Still waiting for $name to shut down (${t}s)"
+      fi
     done
     state="$(hv_vm_state "$name")"
     if [[ "$state" != "poweroff" ]]; then
-      warn "ACPI slow — hard poweroff $name"
+      warn "$name did not shut down within ${PVE_STOP_WAIT:-300}s — hard poweroff"
       pve_power "$vmid" stop || true
     fi
   done
   marker_set "${MARKERS_DIR}/lab-stopped.done"
   cmd_status
+}
+
+# Runs restore-held-services.ps1 in each running guest through the guest agent.
+# SQL Server and Configuration Manager can take many minutes to start.
+cmd_restore_services() {
+  load_boot_order
+  local i name state vmid out rc failed=0
+  for i in "${!NAMES[@]}"; do
+    name="${NAMES[$i]}"
+    state="$(hv_vm_state "$name")"
+    if [[ "$state" != "running" ]]; then
+      log "$name is not running — skip"
+      continue
+    fi
+    vmid="$(vm_vmid "$name")"
+    pve_agent_ready "$vmid" || die "The guest agent on ${name} is not answering"
+    log "Restoring held services on ${name}"
+    set +e
+    out="$(pve_agent_exec "$vmid" "${PVE_RESTORE_WAIT:-1800}" powershell.exe -NoProfile -ExecutionPolicy Bypass \
+      -File 'C:\Windows\Temp\pve-ga\restore-held-services.ps1')"
+    rc=$?
+    set -e
+    [[ -n "$out" ]] && log "${name}: ${out//$'\n'/ }"
+    if [[ "$rc" -ne 0 ]]; then
+      warn "${name}: some services did not start (exit ${rc}). See C:\\Windows\\Temp\\pve-ga\\restore-services.log"
+      failed=1
+    fi
+  done
+  [[ "$failed" -eq 0 ]] || exit 1
 }
 
 cmd_health() {
@@ -198,5 +236,6 @@ case "$CMD" in
   status) cmd_status ;;
   health) cmd_health ;;
   list)   cmd_list ;;
+  restore-services) cmd_restore_services ;;
   *) usage; die "Unknown command: $CMD" ;;
 esac

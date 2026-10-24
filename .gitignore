@@ -30,6 +30,7 @@
 config/lab.env
 config/local.*
 config/secrets.*
+.pve-perms.json
 !.env.example
 
 # .NET build outputs

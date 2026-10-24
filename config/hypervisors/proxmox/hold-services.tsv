@@ -1,0 +1,16 @@
+# guest	service-name pattern (a regular expression, not case sensitive)
+# Automatic services that match are set to disabled on the disk before the guest first boots,
+# so a guest with little memory starts fast. The original start type is saved in the guest.
+# `lab-ctl.sh restore-services` turns them back on. Delete a line to leave that service alone.
+HYD-CM1	^MSSQL
+HYD-CM1	^SQLAgent
+HYD-CM1	^SQLSERVERAGENT
+HYD-CM1	^SQLBrowser$
+HYD-CM1	^SQLTELEMETRY
+HYD-CM1	^MsDtsServer
+HYD-CM1	^ReportServer
+HYD-CM1	^MSOLAP
+HYD-CM1	^SSASTELEMETRY
+HYD-CM1	^SMS_
+HYD-CM1	^SMSEXEC$
+HYD-CM1	^WsusService$

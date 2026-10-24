@@ -10,7 +10,7 @@ Bash scripts that build a Windows lab on a Linux host from a Microsoft lab ZIP y
 - **It picks up where it stopped.** A finished step is skipped until you reset or pass `--force`. Reset removes this lab only. The ZIP and any other virtual machines stay.
 - **Platforms**
   - [VirtualBox](docs/virtualbox.md) — the backend that has built this lab
-  - [Proxmox](docs/proxmox.md) — API create, start, and stop. Disk images are copied with rsync. Download the virtio-win ISO and set Virtio ISO to that file. Every stage stops until the file exists. Stage 5 plants the QEMU guest agent from it
+  - [Proxmox](docs/proxmox.md) — API create, start, and stop. Disk images are copied with rsync. Download the virtio-win ISO and set Virtio ISO to that file. Every stage stops until the file exists. Stage 3 plants the QEMU guest agent from it on each disk before the copy
   - libvirt — pending
   - VMware Workstation — pending
 
@@ -26,7 +26,7 @@ The archive this kit was written against is the Windows 11 25H2 evaluation lab (
 |------|------|--------|------|----------|
 | HYD-DC1 | Active Directory, DNS, DHCP, Certificate Services | 4 GB | 2 | CorpNet |
 | HYD-CM1 | Configuration Manager, SQL Server, WSUS, WDS, ADK | 8 GB | 4 | CorpNet |
-| HYD-GW1 | Remote Access, the lab's path to the Internet | 2 GB | 2 | CorpNet and Internet |
+| HYD-GW1 | Remote Access, the lab's path to the Internet | 4 GB | 2 | CorpNet and Internet |
 
 CorpNet is the lab LAN. Only the gateway has a second adapter, so the lab can reach the Internet. How those two networks are attached depends on the hypervisor. See [VirtualBox](docs/virtualbox.md) or [Proxmox](docs/proxmox.md).
 
@@ -47,7 +47,7 @@ Client VMs (domain-joined and workgroup Windows 11 machines built from `WindowsP
 
 The screen is a stack of titled boxes. Hypervisor choice is first, with VirtualBox in the first spot. The next box is that platform's settings. Under it are the lab settings: kit, work directory, domain, account, password, and Parallel disks. Fields you can change are text boxes. Fields you cannot change are plain text. Parallel disks is on unless you turn it off. It converts independent server disks at the same time. The machines still boot one after another. Leaving a field writes `config/lab.env`. A blank password keeps the current one, and the password is never shown. Progress for each stage stays on the screen, with Run all, Run next, Reset, and Quit underneath, then the live log. While a stage is running, the settings stay as they were when the stage started. The same lines are appended to `tmp/lab.log` under the work directory (default `/virtualmachines/tmp/lab.log`). That file stays when you quit and when you reset the lab. Interrupt a running stage and the menu comes back; the stage's marker is left unset, so the next run retries it.
 
-The menu asks for an administrator password only when the selected backend mounts a guest disk on this machine. VirtualBox does that for Guest Additions. Proxmox plants the agent on the node over SSH, so the menu does not ask.
+The menu asks for your sudo password on this computer only when a stage mounts a guest disk here. VirtualBox does that in stages 3 and 5 for Guest Additions. Proxmox does it in stage 3, to plant the QEMU guest agent on each disk before the copy.
 
 From a shell without a terminal, `./scripts/lab.sh` prints the checklist and exits 0 only when every marker is present.
 
@@ -111,12 +111,11 @@ Large media stays under the work directory, default `/virtualmachines`. It does 
 | `HYPERVISOR` | `virtualbox` | Backend directory name |
 | `LAB_PREFIX` | `HYD` | VM name prefix and network prefix |
 | `LAB_NETWORK_NAME` | `CorpNet` | Logical LAN name |
-| `LAB_DOMAIN` | `Corp` | Domain used in notes and the one-time logon |
-| `LAB_ADMIN_USER` | `LabAdmin` | Account named in the notes and the one-time logon |
-| `LAB_ADMIN_PASSWORD` | empty | Required for client unattend XML and the guest logon. Set it locally |
 | `LAB_PARALLEL` | `1` | Convert independent disks together. `0` converts one at a time |
 
-Shared lab shape is `config/topology.tsv`: name, role, memory, CPUs, disk, and NICs. Guest OS ids live under `config/hypervisors/<name>/`, so each backend can map the same three servers to its own types. Boot order and the pause after each start are `config/boot-order.tsv`: DC, then CM, then the gateway, with waits of 90, 60, and 30 seconds.
+The lab account is `Corp\LabAdmin` with the password that comes with the kit. It is cached on every guest, so it is not a setting, and `lab.env` does not override it.
+
+Shared lab shape is `config/topology.tsv`: name, role, memory, CPUs, disk, and NICs. Guest OS ids live under `config/hypervisors/<name>/`, so each backend can map the same three servers to its own types. Boot order and the pause after each start are `config/boot-order.tsv`: DC, then the gateway, then CM, with waits of 90, 30, and 60 seconds. CM is last because its first boot is the heaviest.
 
 ## Stages
 
@@ -150,9 +149,9 @@ The kit's disks are Hyper-V VHDX, and several of them are differencing disks who
 
 This stage writes operator files. It does not rebuild the servers.
 
-With `LAB_ADMIN_PASSWORD` set, `scripts/prepare-identity.sh` renders:
+`scripts/prepare-identity.sh` renders:
 
-- `tmp/identity/credentials.md` — where the account is recorded, with the password length rather than the password
+- `tmp/identity/credentials.md` — where the account is recorded. The password is not written there
 - `tmp/identity/first-boot-notes.md` — start order and a guest-tools note
 - `tmp/identity/unattend/HYD-CLIENT*-oobe.xml` — client OOBE stubs for a later step
 - a VM description on each server (role, domain, account name, network). The password is not part of the description
@@ -164,14 +163,14 @@ The client unattend XML is not applied to a disk yet.
 `scripts/lab-ctl.sh` is the runtime control for the selected hypervisor.
 
 ```bash
-./scripts/lab-ctl.sh start          # DC, then CM, then gateway, with the waits in boot-order.tsv
+./scripts/lab-ctl.sh start          # DC, then gateway, then CM, with the waits in boot-order.tsv
 ./scripts/lab-ctl.sh start --no-wait
 ./scripts/lab-ctl.sh stop
 ./scripts/lab-ctl.sh status
 ./scripts/lab-ctl.sh health
 ```
 
-`start` boots in the order in `boot-order.tsv` and waits for that backend's guest service. The settle time (90s for the domain controller, then 60s, then 30s) starts when that VM starts. `--no-wait` skips the settle time. It does not skip the guest-service wait. Stop walks the boot order in reverse. `health` checks that each lab VM is registered, has its disk, and is on CorpNet.
+`start` boots in the order in `boot-order.tsv` and waits for that backend's guest service. The settle time (90s for the domain controller, then 30s, then 60s) starts when that VM starts. `--no-wait` skips the settle time. It does not skip the guest-service wait. Stop walks the boot order in reverse. `health` checks that each lab VM is registered, has its disk, and is on CorpNet.
 
 Phase 5 runs health, a start with `--no-wait`, and a stop, then checks that the three servers are powered off.
 

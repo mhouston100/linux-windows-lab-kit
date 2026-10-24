@@ -37,12 +37,20 @@ from labkit.config import (
     write_keys,
 )
 from labkit.runner import run_script, stage_args
-from labkit.stages import STAGES, Stage, next_stage, note_progress, stage_percent, stage_state, stages_to_run
+from labkit.stages import (
+    STAGES,
+    Stage,
+    next_stage,
+    note_progress,
+    stage_needs_sudo,
+    stage_percent,
+    stage_state,
+    stages_to_run,
+)
 from labkit.ssh_auth import SshSession, login_error, start_ssh_session
 from labkit.sudo_auth import MountHelper, start_mount_helper
 
-_NAME = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")
-_GENERAL = ("kit", "work", "domain", "user", "password")
+_GENERAL = ("kit", "work")
 
 
 def _platform_label(name: str) -> str:
@@ -128,11 +136,12 @@ class SudoPrompt(ModalScreen[bool]):
     def compose(self) -> ComposeResult:
         yield Vertical(
             Static(
-                "Enter the administrator password once. "
+                "Enter your sudo password for this computer. "
+                "sudo is needed once, to mount the guest disks and plant the QEMU guest agent. "
                 "The rest of this run will not ask again. "
-                "It is not stored, and it is not the lab account password."
+                "It is not stored, and it is not the Proxmox or the lab account password."
             ),
-            LabInput(placeholder="Password", password=True, id="sudo-password"),
+            LabInput(placeholder="sudo password", password=True, id="sudo-password"),
             Horizontal(
                 Button("Continue", id="sudo-continue", variant="primary"),
                 Button("Cancel", id="sudo-cancel"),
@@ -166,7 +175,7 @@ class SudoPrompt(ModalScreen[bool]):
         password = field.value
         field.value = ""
         if password == "":
-            self.notify("Enter the administrator password.", severity="warning")
+            self.notify("Enter your sudo password.", severity="warning")
             field.focus()
             return
         self._checking = True
@@ -179,7 +188,7 @@ class SudoPrompt(ModalScreen[bool]):
             del password
             self._checking = False
         if helper is None:
-            self.notify("Password was not accepted.", severity="error")
+            self.notify("sudo did not accept that password.", severity="error")
             field.focus()
             return
         self.helper = helper
@@ -366,9 +375,6 @@ class LabApp(App[int]):
             with Vertical(id="lab-settings", classes="panel"):
                 yield from self._general_row("Kit ZIP", str(self.cfg.lab_zip_path), "kit")
                 yield from self._general_row("Work directory", str(self.cfg.work_dir), "work")
-                yield from self._general_row("Domain", self.cfg.lab_domain, "domain")
-                yield from self._general_row("Account", self.cfg.lab_admin_user, "user")
-                yield from self._general_row("Password", "", "password", password=True)
                 yield Checkbox("Parallel disks", value=self.cfg.parallel, id="parallel", compact=True)
             with Vertical(id="stages", classes="panel"):
                 for stage in STAGES:
@@ -407,11 +413,10 @@ class LabApp(App[int]):
         )
 
     @staticmethod
-    def _general_row(label: str, value: str, field_id: str, password: bool = False) -> ComposeResult:
-        placeholder = "Leave blank to keep the current password" if password else ""
+    def _general_row(label: str, value: str, field_id: str) -> ComposeResult:
         yield Horizontal(
             Label(label),
-            LabInput(value=value, id=field_id, password=password, placeholder=placeholder),
+            LabInput(value=value, id=field_id),
             classes="setting",
         )
 
@@ -671,22 +676,8 @@ class LabApp(App[int]):
                 return False
             if not updates:
                 return True
-        elif field_id in {"domain", "user"}:
-            value = self.query_one(f"#{field_id}", Input).value.strip()
-            current = self.cfg.lab_domain if field_id == "domain" else self.cfg.lab_admin_user
-            label = "Domain" if field_id == "domain" else "Account"
-            if value == current:
-                return True
-            if not value or any(ch not in _NAME for ch in value):
-                self.notify(f"{label} must use letters, digits, dots, underscores, or hyphens.", severity="warning")
-                self.query_one(f"#{field_id}", Input).value = current
-                return False
-            updates["LAB_DOMAIN" if field_id == "domain" else "LAB_ADMIN_USER"] = value
         else:
-            password = self.query_one("#password", Input).value
-            if password == "":
-                return True
-            updates["LAB_ADMIN_PASSWORD"] = password
+            return True
         if not updates:
             return True
         try:
@@ -695,8 +686,6 @@ class LabApp(App[int]):
             self.notify("Could not save that setting.", severity="error")
             return False
         self.cfg = load_config(self.cfg.root)
-        if field_id == "password":
-            self.query_one("#password", Input).value = ""
         if field_id == "hv-token-secret":
             self.query_one("#hv-token-secret", Input).value = ""
         self.refresh_stages()
@@ -848,9 +837,9 @@ class LabApp(App[int]):
 
     def _ask_for_mount_helper(self) -> MountHelper | None:
         """Ask once, before the run, and keep the helper for every mount."""
-        script = self.cfg.root / "scripts" / "hypervisors" / self.cfg.hypervisor / "guest-additions.sh"
+        script = self.cfg.root / "scripts" / "lib" / "offline-disk.sh"
         if not script.is_file():
-            self.call_from_thread(self._write, "This platform has no disk-mount helper.")
+            self.call_from_thread(self._write, "The disk-mount helper is missing.")
             return None
         done = threading.Event()
         holder: dict[str, MountHelper | None] = {"helper": None}
@@ -889,23 +878,13 @@ class LabApp(App[int]):
                             "The SSH password was not entered. Nothing was started.",
                         )
                     return
-            if any(stage.needs_sudo for stage, _args in jobs):
-                mount_script = (
-                    self.cfg.root / "scripts" / "hypervisors" / self.cfg.hypervisor / "guest-additions.sh"
-                )
-                if not mount_script.is_file():
-                    if self.cfg.hypervisor != "proxmox":
-                        self.call_from_thread(
-                            self._write,
-                            "This platform does not mount a disk, so there is no administrator prompt.",
-                        )
-                else:
-                    helper = self._ask_for_mount_helper()
-                if helper is None and mount_script.is_file():
+            if any(stage_needs_sudo(stage, self.cfg.hypervisor) for stage, _args in jobs):
+                helper = self._ask_for_mount_helper()
+                if helper is None:
                     if not self._cancel.is_set():
                         self.call_from_thread(
                             self._write,
-                            "The administrator password was not accepted. Nothing was started.",
+                            "sudo did not accept the password. Nothing was started.",
                         )
                     return
             for stage, args in jobs:

@@ -12,6 +12,12 @@ from pathlib import Path
 DEFAULT_VM_ROOT = Path("/virtualmachines")
 DEFAULT_LAB_ZIP = Path("/virtualmachines/Kit/Original/Win11_25H2_Lab.zip")
 DEFAULT_LAB_ZIP_NAME = "Win11_25H2_Lab.zip"
+
+# The kit ships with this account and its credentials cached on every guest.
+# They cannot be changed, so they are not settings. The password lives in
+# scripts/lib/config.sh, which the stage scripts read.
+LAB_DOMAIN = "Corp"
+LAB_ADMIN_USER = "LabAdmin"
 DEFAULT_PVE_NODE = "pve"
 DEFAULT_PVE_IMPORT_STORAGE = "local"
 DEFAULT_PVE_STORAGE = "local-lvm"
@@ -32,9 +38,6 @@ class LabConfig:
     hypervisor: str
     lab_prefix: str
     lab_network_name: str
-    lab_admin_user: str
-    lab_admin_password: str
-    lab_domain: str
     parallel: bool = True
     work_dir: Path = field(default_factory=lambda: Path("/virtualmachines"))
     guest_additions_iso: str = ""
@@ -62,10 +65,6 @@ class LabConfig:
     def env_file(self) -> Path:
         return self.root / "config" / "lab.env"
 
-    @property
-    def password_set(self) -> bool:
-        return bool(self.lab_admin_password)
-
     def cli_env(self) -> dict[str, str]:
         """Paths for a stage. Work files and the VM directory stay independent."""
         return {
@@ -75,7 +74,6 @@ class LabConfig:
         }
 
     def summary_lines(self) -> list[str]:
-        password = "set" if self.password_set else "not set"
         if self.hypervisor == "proxmox":
             where = self.pve_api_host or "API host not set"
             machines = self.pve_node or "node not set"
@@ -89,7 +87,7 @@ class LabConfig:
             f"Kit      {self.lab_zip_path}",
             f"Work     {self.work_dir}",
             f"VMs      {machines}",
-            f"Account  {self.lab_domain} / {self.lab_admin_user}  password {password}",
+            f"Account  {LAB_DOMAIN}\\{LAB_ADMIN_USER}  (preconfigured in the kit)",
             f"Hypervisor  {self.hypervisor}  {where}",
         ]
 
@@ -153,9 +151,6 @@ def load_config(root: Path, kit: str | None = None, dest: str | None = None) -> 
         hypervisor=values.get("HYPERVISOR") or "virtualbox",
         lab_prefix=values.get("LAB_PREFIX") or "HYD",
         lab_network_name=values.get("LAB_NETWORK_NAME") or "CorpNet",
-        lab_admin_user=values.get("LAB_ADMIN_USER") or "LabAdmin",
-        lab_admin_password=values.get("LAB_ADMIN_PASSWORD") or "",
-        lab_domain=values.get("LAB_DOMAIN") or "Corp",
         parallel=_flag(values.get("LAB_PARALLEL"), default=True),
         work_dir=work_dir,
         guest_additions_iso=values.get("VBOX_GUEST_ADDITIONS_ISO") or guest_additions_iso(),

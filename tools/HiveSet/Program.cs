@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Text;
+using System.Text.RegularExpressions;
 using DiscUtils.Registry;
 
 if (args.Length == 1 && args[0] == "--self-test")
@@ -7,9 +8,29 @@ if (args.Length == 1 && args[0] == "--self-test")
     return SelfTest();
 }
 
+if (args.Length == 3 && args[1] == "--hold")
+{
+    // HiveSet SYSTEM --hold PATTERNS: set matching automatic services to
+    // disabled and print "name<TAB>old start" for each one changed.
+    using var holdStream = File.Open(args[0], FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+    using var holdHive = new RegistryHive(holdStream);
+    var held = HoldServices(holdHive, File.ReadAllLines(args[2]));
+    if (held == null)
+    {
+        return 1;
+    }
+    holdStream.Flush();
+    foreach (var line in held)
+    {
+        Console.Out.Write(line + "\n");
+    }
+    return 0;
+}
+
 if (args.Length != 1)
 {
     Console.Error.WriteLine("usage: HiveSet HIVE < records");
+    Console.Error.WriteLine("       HiveSet SYSTEM --hold PATTERNS");
     return 2;
 }
 
@@ -72,6 +93,53 @@ static int Apply(RegistryHive hive, Stream input)
         }
     }
     return 0;
+}
+
+// Automatic services whose name matches a pattern are set to disabled (Start 4).
+// Only the current control set is changed. A service that is not automatic is
+// left alone, so a second run reports nothing for a service already held.
+static List<string>? HoldServices(RegistryHive hive, string[] patterns)
+{
+    var rules = new List<Regex>();
+    foreach (var raw in patterns)
+    {
+        var text = raw.Trim();
+        if (text.Length == 0 || text.StartsWith('#'))
+        {
+            continue;
+        }
+        rules.Add(new Regex(text, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant));
+    }
+    var select = hive.Root.OpenSubKey("Select");
+    var current = select?.GetValue("Current");
+    var number = current is int i ? i : current is uint u ? (int)u : 1;
+    var services = hive.Root.OpenSubKey($"ControlSet{number:000}\\Services");
+    if (services == null)
+    {
+        Console.Error.WriteLine("The SYSTEM hive has no Services key");
+        return null;
+    }
+    var held = new List<string>();
+    foreach (var name in services.GetSubKeyNames().OrderBy(n => n, StringComparer.OrdinalIgnoreCase))
+    {
+        if (!rules.Any(rule => rule.IsMatch(name)))
+        {
+            continue;
+        }
+        var key = services.OpenSubKey(name);
+        var start = key?.GetValue("Start");
+        var kind = key?.GetValue("Type");
+        var startNumber = start is int s ? s : start is uint su ? (int)su : -1;
+        var typeNumber = kind is int k ? k : kind is uint ku ? (int)ku : 0;
+        // Start 2 is automatic. Type bits 0x10 and 0x20 are Win32 services, not drivers.
+        if (key == null || startNumber != 2 || (typeNumber & 0x30) == 0)
+        {
+            continue;
+        }
+        key.SetValue("Start", 4, RegistryValueType.Dword);
+        held.Add($"{name}\t{startNumber}");
+    }
+    return held;
 }
 
 static bool IsDword(object? value, int expected)
@@ -223,6 +291,67 @@ static int SelfTest()
     }
 
     File.Delete(path);
+    return HoldSelfTest();
+}
+
+static int HoldSelfTest()
+{
+    var path = Path.Combine(Path.GetTempPath(), "lab-hive-hold-test.hive");
+    File.Delete(path);
+    using (var stream = File.Create(path))
+    using (var hive = CreateEmptyHive(stream))
+    {
+        EnsurePath(hive, "Select").SetValue("Current", 1, RegistryValueType.Dword);
+        void Service(string name, int start, int type)
+        {
+            var key = EnsurePath(hive, $"ControlSet001\\Services\\{name}");
+            key.SetValue("Start", start, RegistryValueType.Dword);
+            key.SetValue("Type", type, RegistryValueType.Dword);
+        }
+        Service("MSSQLSERVER", 2, 16);
+        Service("SMS_EXECUTIVE", 2, 16);
+        Service("SQLBrowser", 3, 16);
+        Service("MSSQLdriver", 2, 1);
+        Service("Spooler", 2, 16);
+        stream.Flush();
+    }
+    var patterns = Path.Combine(Path.GetTempPath(), "lab-hive-hold-patterns.txt");
+    File.WriteAllLines(patterns, new[] { "# comment", "^MSSQL", "^SQLBrowser$", "^SMS_" });
+
+    List<string>? first;
+    List<string>? second;
+    using (var stream = File.Open(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+    using (var hive = new RegistryHive(stream))
+    {
+        first = HoldServices(hive, File.ReadAllLines(patterns));
+        stream.Flush();
+    }
+    using (var stream = File.Open(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+    using (var hive = new RegistryHive(stream))
+    {
+        second = HoldServices(hive, File.ReadAllLines(patterns));
+        stream.Flush();
+    }
+    using (var stream = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+    using (var hive = new RegistryHive(stream))
+    {
+        int StartOf(string name) =>
+            hive.Root.OpenSubKey($"ControlSet001\\Services\\{name}")?.GetValue("Start") is int v ? v : -1;
+        if (first == null || second == null
+            || !first.SequenceEqual(new[] { "MSSQLSERVER\t2", "SMS_EXECUTIVE\t2" })
+            || second.Count != 0
+            || StartOf("MSSQLSERVER") != 4
+            || StartOf("SMS_EXECUTIVE") != 4
+            || StartOf("SQLBrowser") != 3
+            || StartOf("MSSQLdriver") != 2
+            || StartOf("Spooler") != 2)
+        {
+            Console.Error.WriteLine("hold self-test failed");
+            return 1;
+        }
+    }
+    File.Delete(path);
+    File.Delete(patterns);
     Console.WriteLine("hive self-test ok");
     return 0;
 }

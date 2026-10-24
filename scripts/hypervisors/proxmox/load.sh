@@ -90,14 +90,20 @@ hv_description_ok() {
   [[ -n "$text" ]]
 }
 
+# Stage 3 mounts each converted disk to plant the guest agent. Nothing else
+# on Proxmox needs sudo.
 hv_stage_needs_privileges() {
-  return 1
+  [[ "$1" == "3" ]]
 }
 
 hv_prepare_privileged() {
-  return 0
+  ga_sudo_begin
 }
 
 hv_finish_privileged() {
-  return 0
+  # A full run holds the helper across stages. Do not stop it between them.
+  [[ "${GA_PRIV_HOLD:-0}" == 1 ]] && return 0
+  if declare -F ga_sudo_end >/dev/null; then
+    ga_sudo_end
+  fi
 }

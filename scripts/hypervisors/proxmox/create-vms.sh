@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Proxmox: copy qcow2 images with rsync and create the server VMs through the API.
+# Proxmox: plant the QEMU guest agent on each converted qcow2, copy the disks
+# with rsync, and create the server VMs through the API.
 
 set -euo pipefail
 HV_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -10,7 +11,9 @@ source "${HV_DIR}/load.sh"
 
 FORCE=0
 DO_PROMPT=1
-SMOKE=1
+SMOKE=0
+PLANT=1
+PVE_HOLD=1
 TOPOLOGY_FILE=""
 
 usage() {
@@ -20,7 +23,15 @@ Usage: create-lab-vms.sh [options]
   --force         Recreate VMs if they already exist
   --no-prompt     Use defaults / lab.env without path prompts
   --prompt        Force path prompts (default when interactive)
-  --no-smoke      Skip the gateway power-on smoke test
+  --smoke         Boot the gateway once and power it off. Off by default: the
+                  guest agent install must be the first boot, and a hard stop
+                  can leave the Windows volume unclean
+  --no-smoke      Skip the power-on test (the default)
+  --no-hold       Leave the SQL Server and Configuration Manager services enabled.
+                  By default hold-services.tsv disables them on the disk until
+                  lab-ctl.sh restore-services runs
+  --no-plant      Do not plant the guest agent on the disks. Only for disks that
+                  were already serviced another way
   --topology FILE Override topology TSV (default: config/topology.tsv)
 EOF
 }
@@ -30,7 +41,10 @@ while [[ $# -gt 0 ]]; do
     --force) FORCE=1 ;;
     --no-prompt) DO_PROMPT=0 ;;
     --prompt) DO_PROMPT=1 ;;
+    --smoke) SMOKE=1 ;;
     --no-smoke) SMOKE=0 ;;
+    --no-plant) PLANT=0 ;;
+    --no-hold) PVE_HOLD=0 ;;
     --topology) TOPOLOGY_FILE="${2:?}"; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "Unknown option: $1" ;;
@@ -163,14 +177,36 @@ smoke_one() {
 log "Proxmox node=${PVE_NODE} import=${PVE_IMPORT_STORAGE} disks=${PVE_STORAGE} bridge=${PVE_BRIDGE}"
 log "CONVERT_DIR=$CONVERT_DIR"
 
+# A guest that already has its disk is not imported again, so its local disk
+# is not touched either.
+needs_disk() {
+  local name="$1" row vmid
+  [[ "$FORCE" -eq 1 ]] && return 0
+  row="$(pve_find_name "$name")" || return 0
+  vmid="${row%%$'\t'*}"
+  [[ -z "$(pve_config_value "$vmid" sata0)" ]]
+}
+
 upload_paths=()
+plant_names=()
+plant_paths=()
 while IFS=$'\t' read -r name role memory_mb cpus disk nic1 nic2 notes || [[ -n "${name:-}" ]]; do
   [[ -z "${name:-}" || "$name" =~ ^# ]] && continue
   [[ "$name" == "name" ]] && continue
   src="$(converted_disk "$disk")"
   [[ -f "$src" ]] || die "Converted disk missing: ${src} (run phase 2 first)"
   upload_paths+=("$src")
+  if [[ "$PLANT" -eq 1 ]] && needs_disk "$name"; then
+    plant_names+=("$name")
+    plant_paths+=("$src")
+  fi
 done <"$TOPOLOGY_FILE"
+
+# Everything that can be done to a disk on this machine is done before it is
+# copied. The guest has never booted, so nothing has to be stopped first.
+for i in "${!plant_names[@]}"; do
+  pve_plant_disk "${plant_names[$i]}" "${plant_paths[$i]}" </dev/null
+done
 pve_plan_uploads "${upload_paths[@]}"
 pve_check_copy
 

@@ -43,6 +43,17 @@ STAGES: tuple[Stage, ...] = (
 )
 
 
+def stage_needs_sudo(stage: Stage, hypervisor: str) -> bool:
+    """True when the stage mounts a guest disk on this machine.
+
+    VirtualBox mounts the disks in stages 3 and 5. Proxmox plants the guest
+    agent while it creates the guests, so only stage 3 mounts anything.
+    """
+    if hypervisor == "proxmox":
+        return stage.number == 3
+    return stage.needs_sudo
+
+
 def stages_to_run(config: LabConfig) -> tuple[list[Stage], str]:
     """Stages Run all should start, in order.
 

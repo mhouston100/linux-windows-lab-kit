@@ -72,11 +72,20 @@ pve_pin_cert() {
   local pem want got
   if [[ -z "${PVE_TLS_FINGERPRINT:-}" ]]; then
     PVE_CA_FILE=""
-    log "TLS fingerprint is blank. The API certificate is not checked."
+    # Standard error, so a state read captured with $( ) stays one word. Once per run.
+    if [[ ! -e "${PVE_RUNTIME}/blank-fingerprint-logged" ]]; then
+      : >"${PVE_RUNTIME}/blank-fingerprint-logged"
+      log "TLS fingerprint is blank. The API certificate is not checked." >&2
+    fi
     return 0
   fi
   pem="${PVE_RUNTIME}/cert.pem"
   want="$(pve_norm_fp "$PVE_TLS_FINGERPRINT")" || die "Proxmox TLS fingerprint must be a SHA256 hex string"
+  # A subshell asking for a guest state repeats this check. The first one is enough.
+  if [[ -s "$pem" && -e "${PVE_RUNTIME}/pinned" && "$(<"${PVE_RUNTIME}/pinned")" == "$want" ]]; then
+    PVE_CA_FILE="$pem"
+    return 0
+  fi
   # s_client returns non-zero for a private certificate even when the
   # certificate was printed. The fingerprint comparison below is the check.
   set +e +o pipefail
@@ -93,6 +102,7 @@ pve_pin_cert() {
   got="${got#*=}"
   got="$(pve_norm_fp "$got")" || die "Could not read the Proxmox certificate fingerprint"
   [[ "$got" == "$want" ]] || die "Proxmox certificate fingerprint is ${got}. The saved fingerprint is ${want}."
+  printf '%s' "$want" >"${PVE_RUNTIME}/pinned"
   PVE_CA_FILE="$pem"
 }
 
@@ -100,7 +110,14 @@ pve_prepare() {
   [[ "${PVE_READY:-}" == 1 ]] && return 0
   pve_require_settings
   pve_split_host
-  PVE_RUNTIME="$(mktemp -d "${TMPDIR:-/tmp}/lab-pve.XXXXXX")"
+  # $$ is the main shell's pid inside $( ) too, so a run keeps one directory
+  # however many subshells read a guest state. Older directories are removed.
+  PVE_RUNTIME="${TMPDIR:-/tmp}/lab-pve.$(id -u).$$"
+  if [[ ! -d "$PVE_RUNTIME" ]]; then
+    find "${TMPDIR:-/tmp}" -maxdepth 1 -type d -name 'lab-pve.*' -user "$(id -u)" -mmin +1440 \
+      -exec rm -rf {} + 2>/dev/null || true
+    mkdir -m 700 "$PVE_RUNTIME" || die "Could not create ${PVE_RUNTIME}"
+  fi
   chmod 700 "$PVE_RUNTIME"
   pve_pin_cert
   PVE_READY=1
@@ -140,8 +157,14 @@ pve_call() {
   PVE_HTTP="$http"
   if [[ "$rc" -ne 0 ]]; then
     rm -f "$PVE_RESPONSE_FILE"
+    PVE_CURL_RC="$rc"
+    # A long import can make the API miss one connection. The task wait retries that.
+    if [[ "${PVE_CALL_SOFT:-}" == 1 ]]; then
+      return 1
+    fi
     die "Could not reach the Proxmox API (${method} ${path}, curl ${rc})"
   fi
+  PVE_CURL_RC=0
   PVE_RESPONSE="$(cat "$PVE_RESPONSE_FILE" 2>/dev/null || true)"
   rm -f "$PVE_RESPONSE_FILE"
 }
@@ -163,24 +186,42 @@ except Exception:
 print(data if isinstance(data,str) and data.startswith("UPID:") else "")'
 }
 
+# Ask about a running task every 20 seconds. Six missed answers, about two
+# minutes, end the wait. The task on the node keeps running either way.
 pve_wait_task() {
-  local upid="$1" encoded status exitstatus started now
+  local upid="$1" encoded status exitstatus misses began now pause answered
   encoded="$(pve_quote "$upid")"
-  started="$(date +%s)"
+  misses=0
   while true; do
-    pve_call GET "/nodes/$(pve_quote "$PVE_NODE")/tasks/${encoded}/status"
-    pve_expect GET "/nodes/${PVE_NODE}/tasks/UPID/status"
-    status="$(printf '%s' "$PVE_RESPONSE" | python3 -c 'import json,sys; print((json.load(sys.stdin).get("data") or {}).get("status") or "")')"
-    exitstatus="$(printf '%s' "$PVE_RESPONSE" | python3 -c 'import json,sys; print((json.load(sys.stdin).get("data") or {}).get("exitstatus") or "")')"
-    if [[ "$status" == "stopped" ]]; then
-      [[ "$exitstatus" == "OK" ]] || die "Proxmox task failed (${exitstatus})"
-      return 0
+    began="$(date +%s)"
+    answered=0
+    PVE_CALL_SOFT=1
+    if pve_call GET "/nodes/$(pve_quote "$PVE_NODE")/tasks/${encoded}/status"; then
+      answered=1
+    fi
+    PVE_CALL_SOFT=0
+    if [[ "$answered" -eq 1 ]]; then
+      misses=0
+      pve_expect GET "/nodes/${PVE_NODE}/tasks/UPID/status"
+      status="$(printf '%s' "$PVE_RESPONSE" | python3 -c 'import json,sys; print((json.load(sys.stdin).get("data") or {}).get("status") or "")')"
+      exitstatus="$(printf '%s' "$PVE_RESPONSE" | python3 -c 'import json,sys; print((json.load(sys.stdin).get("data") or {}).get("exitstatus") or "")')"
+      if [[ "$status" == "stopped" ]]; then
+        [[ "$exitstatus" == "OK" ]] || die "Proxmox task failed (${exitstatus})"
+        return 0
+      fi
+      log "Proxmox task still running"
+    else
+      misses=$((misses + 1))
+      if [[ "$misses" -ge 6 ]]; then
+        die "The Proxmox API did not answer for 2 minutes while a task was still running (curl ${PVE_CURL_RC:-unknown})"
+      fi
+      log "Proxmox API did not answer (attempt ${misses} of 6). The task is left running."
     fi
     now="$(date +%s)"
-    if (( now - started > 0 && (now - started) % 30 < 2 )); then
-      log "Proxmox task still running"
+    pause=$((20 - (now - began)))
+    if [[ "$pause" -gt 0 ]]; then
+      sleep "$pause"
     fi
-    sleep 2
   done
 }
 
@@ -276,34 +317,85 @@ pve_power_try() {
 
 pve_agent_ready() {
   local vmid="$1"
-  pve_call GET "/nodes/$(pve_quote "$PVE_NODE")/qemu/${vmid}/agent/ping"
+  # Proxmox registers this route as POST. GET returns 501 even when the agent is up.
+  pve_call POST "/nodes/$(pve_quote "$PVE_NODE")/qemu/${vmid}/agent/ping"
   [[ "${PVE_HTTP:-}" == 200 ]]
 }
 
+# Wait for the QEMU guest agent, then for it to keep answering for
+# PVE_AGENT_STABLE seconds (default 120). The first install ends with a restart
+# of the guest a few seconds after the agent first answers, and the next guest
+# must not start while that restart is still under way.
 pve_wait_agent() {
-  local name="$1" vmid="$2" max="${PVE_AGENT_WAIT:-1800}" elapsed=0 off=0 state
+  local name="$1" vmid="$2" max="${PVE_AGENT_WAIT:-1800}" need="${PVE_AGENT_STABLE:-120}"
+  local elapsed=0 off=0 state since=0 now
   log "Waiting up to ${max}s for the QEMU guest agent on ${name}"
   while [[ "$elapsed" -lt "$max" ]]; do
     state="$(hv_vm_state "$name")"
     if [[ "$state" == "running" ]] && pve_agent_ready "$vmid"; then
-      log "QEMU guest agent answered on ${name}"
-      return 0
+      now="$(date +%s)"
+      if [[ "$since" -eq 0 ]]; then
+        since="$now"
+        log "QEMU guest agent answered on ${name}"
+        if [[ "$need" -gt 0 ]]; then
+          log "Checking that it keeps answering for ${need}s. The installer restarts the guest once."
+        fi
+      fi
+      if [[ $((now - since)) -ge "$need" ]]; then
+        log "QEMU guest agent on ${name} is steady"
+        return 0
+      fi
+    elif [[ "$since" -ne 0 ]]; then
+      log "The QEMU guest agent on ${name} stopped answering. Waiting for it to come back."
+      since=0
     fi
     if [[ "$state" == "poweroff" || "$state" == "missing" ]]; then
       off=$((off + 10))
       if [[ "$off" -ge 120 && "$elapsed" -gt 60 ]]; then
-        die "${name} stayed off. The QEMU guest agent is not planted in the disk yet."
+        die "${name} stayed powered off while the QEMU guest agent was awaited."
       fi
     else
       off=0
     fi
-    if (( elapsed > 0 && elapsed % 30 == 0 )); then
+    if [[ "$since" -eq 0 ]] && (( elapsed > 0 && elapsed % 30 == 0 )); then
       log "Still waiting for the QEMU guest agent on ${name} (${elapsed}s)"
     fi
     sleep 10
     elapsed=$((elapsed + 10))
   done
-  die "Timed out waiting for the QEMU guest agent on ${name}. The agent is not planted in the disk yet."
+  die "Timed out waiting for the QEMU guest agent on ${name}. On the guest, C:\\Windows\\Temp\\pve-ga\\install.log shows how far the installer got. No log there means the installer never started."
+}
+
+# Run a program in the guest through the QEMU guest agent and wait for it.
+# $1 vmid, $2 seconds to wait, then the program and its arguments. Prints the
+# program's output and returns its exit code.
+pve_agent_exec() {
+  local vmid="$1" max="$2" pid exited code waited=0 path
+  shift 2
+  local -a data=()
+  local arg
+  for arg in "$@"; do
+    data+=(--data-urlencode "command=${arg}")
+  done
+  path="/nodes/$(pve_quote "$PVE_NODE")/qemu/${vmid}/agent/exec"
+  pve_call POST "$path" "${data[@]}"
+  pve_expect POST "$path"
+  pid="$(printf '%s' "$PVE_RESPONSE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["pid"])')" \
+    || die "The guest agent did not return a process id"
+  while [[ "$waited" -lt "$max" ]]; do
+    path="/nodes/$(pve_quote "$PVE_NODE")/qemu/${vmid}/agent/exec-status?pid=${pid}"
+    pve_call GET "$path"
+    pve_expect GET "$path"
+    exited="$(printf '%s' "$PVE_RESPONSE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"].get("exited",0))')"
+    if [[ "$exited" == 1 ]]; then
+      printf '%s' "$PVE_RESPONSE" | python3 -c 'import json,sys; d=json.load(sys.stdin)["data"]; sys.stdout.write(d.get("out-data","")+d.get("err-data",""))'
+      code="$(printf '%s' "$PVE_RESPONSE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"].get("exitcode",0))')"
+      return "$code"
+    fi
+    sleep 5
+    waited=$((waited + 5))
+  done
+  die "The program in the guest did not finish within ${max}s"
 }
 
 pve_read_storage() {
@@ -480,21 +572,22 @@ except ImportPlanError as exc:
   PVE_IMPORT_DIR="$dir"
 }
 
-# Prints the remote byte count, or nothing when the file is absent.
-# Connection failures are not treated as a missing file.
-pve_remote_size() {
-  local target="$1" quoted err size rc message
+# Prints a stat field for a file on the node, or nothing when it is absent.
+# $2 is the stat format, default the byte count. $3 is the pattern the answer
+# must match. Connection failures are not treated as a missing file.
+pve_remote_stat() {
+  local target="$1" fmt="${2:-%s}" pattern="${3:-^[0-9]+$}" quoted err out rc message
   quoted="$(printf '%q' "$target")"
   err="$(mktemp)"
   set +e
-  size="$(pve_ssh "stat -c %s -- ${quoted}" 2>"$err")"
+  out="$(pve_ssh "stat -c '${fmt}' -- ${quoted}" 2>"$err")"
   rc=$?
   set -e
   if [[ "$rc" -eq 0 ]]; then
     rm -f "$err"
-    size="$(printf '%s\n' "$size" | awk '/^[0-9]+$/ {n=$0} END {print n}')"
-    [[ "$size" =~ ^[0-9]+$ ]] || die "Remote size of ${target} was not a number"
-    printf '%s' "$size"
+    out="$(printf '%s\n' "$out" | awk -v re="$pattern" '$0 ~ re {n=$0} END {print n}')"
+    [[ -n "$out" ]] || die "Remote stat of ${target} was not what was asked for"
+    printf '%s' "$out"
     return 0
   fi
   if [[ "$rc" -eq 1 ]]; then
@@ -505,6 +598,10 @@ pve_remote_size() {
   message="$(cat "$err")"
   rm -f "$err"
   die "SSH to ${PVE_SSH_USER}@${PVE_SSH_HOST} failed (${rc}). $(pve_scrub "$message")"
+}
+
+pve_remote_size() {
+  pve_remote_stat "$1" '%s' '^[0-9]+$'
 }
 
 pve_check_copy() {
@@ -531,7 +628,11 @@ pve_rsync_file() {
   dest="${PVE_IMPORT_DIR}/${base}"
   local_bytes="$(stat -c %s "$src")"
   remote="$(pve_remote_size "$dest")"
-  if [[ "$remote" == "$local_bytes" ]]; then
+  # Same size is not enough. A disk planted after an earlier copy keeps its
+  # size more often than not. rsync -a keeps the modified time, so the same
+  # size and the same time mean the same file.
+  if [[ "$remote" == "$local_bytes" ]] \
+    && [[ "$(pve_remote_stat "$dest" '%Y' '^[0-9]+$')" == "$(stat -c %Y "$src")" ]]; then
     log "Import image already on ${PVE_IMPORT_STORAGE}: ${base}"
     return 0
   fi

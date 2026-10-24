@@ -1,5 +1,6 @@
 # name	order	wait_seconds	notes
 # Ordered start (low → high). Stop runs in reverse.
+# CM is last: it is the heaviest first boot. DC must be up before any domain member.
 HYD-DC1	10	90	Domain controller — wait for AD/DNS
-HYD-CM1	20	60	MECM / SQL after DC
-HYD-GW1	30	30	Gateway last
+HYD-GW1	20	30	Gateway after DC
+HYD-CM1	30	60	MECM / SQL last

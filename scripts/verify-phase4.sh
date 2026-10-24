@@ -23,11 +23,7 @@ check "first-boot-notes.md" test -f "${IDENTITY_DIR}/first-boot-notes.md"
 check "summary.env" test -f "${IDENTITY_DIR}/summary.env"
 check "client unattend template in repo" test -f "${ROOT_DIR}/templates/unattend/client-oobe.xml.tmpl"
 
-if [[ -n "${LAB_ADMIN_PASSWORD:-}" ]]; then
-  check "client unattend rendered" test -f "${IDENTITY_DIR}/unattend/HYD-CLIENT1-oobe.xml"
-else
-  printf '  [INFO] LAB_ADMIN_PASSWORD unset — unattend XML not required for checkpoint\n'
-fi
+check "client unattend rendered" test -f "${IDENTITY_DIR}/unattend/HYD-CLIENT1-oobe.xml"
 
 # Server VMs should carry a description set by the hypervisor backend
 for name in HYD-DC1 HYD-CM1 HYD-GW1; do
