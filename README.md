@@ -11,7 +11,7 @@ Bash scripts that build a Windows lab on a Linux host from a Microsoft lab ZIP y
 - **Platforms**
   - [VirtualBox](docs/virtualbox.md) — the backend that has built this lab
   - [Proxmox](docs/proxmox.md) — API create, start, and stop. Disk images are copied with rsync. Download the virtio-win ISO and set Virtio ISO to that file. Every stage stops until the file exists. Stage 3 plants the QEMU guest agent from it on each disk before the copy
-  - libvirt — pending
+  - [libvirt](docs/libvirt.md) — local QEMU/KVM. Stage 3 plants the QEMU guest agent on each disk before create
   - VMware Workstation — pending
 
 The project is independent. It is not affiliated with, endorsed by, or redistributed by Microsoft. You supply the lab ZIP and any licenses the software inside it requires. This repository contains orchestration, templates, and two small .NET tools. It does not contain Windows media, product keys, or passwords.
@@ -28,7 +28,7 @@ The archive this kit was written against is the Windows 11 25H2 evaluation lab (
 | HYD-CM1 | Configuration Manager, SQL Server, WSUS, WDS, ADK | 8 GB | 4 | CorpNet |
 | HYD-GW1 | Remote Access, the lab's path to the Internet | 4 GB | 2 | CorpNet and Internet |
 
-CorpNet is the lab LAN. Only the gateway has a second adapter, so the lab can reach the Internet. How those two networks are attached depends on the hypervisor. See [VirtualBox](docs/virtualbox.md) or [Proxmox](docs/proxmox.md).
+CorpNet is the lab LAN. Only the gateway has a second adapter, so the lab can reach the Internet. How those two networks are attached depends on the hypervisor. See [VirtualBox](docs/virtualbox.md), [Proxmox](docs/proxmox.md), or [libvirt](docs/libvirt.md).
 
 The domain, account, and network names come from configuration. The defaults are domain `Corp`, user `LabAdmin`, prefix `HYD`, and network `CorpNet`. The password is whatever you set in `config/lab.env`. The scripts never print it and the file is gitignored.
 
@@ -196,12 +196,14 @@ config/topology.tsv             # shared VM shape
 config/boot-order.tsv           # start order and pauses
 config/hypervisors/virtualbox/  # VirtualBox guest OS ids
 config/hypervisors/proxmox/     # Proxmox guest ids and VMIDs
+config/hypervisors/libvirt/     # libvirt osinfo variants
 scripts/lab.sh                  # starts the Python menu
 python/labkit/                  # Textual menu, settings, stage runner
 scripts/phase1.sh … phase6.sh   # one Bash stage each
 scripts/lib/                    # config, checklist, hypervisor loader
 scripts/hypervisors/virtualbox/ # VirtualBox create, control, Guest Additions
 scripts/hypervisors/proxmox/    # Proxmox API create, control, disk import
+scripts/hypervisors/libvirt/    # libvirt / QEMU create, control, guest agent plant
 templates/                      # identity notes and client unattend
 tools/VhdxFlatten/              # differencing VHDX flattener
 tools/HiveSet/                  # offline registry writer
@@ -209,6 +211,7 @@ third_party/nuget/              # DiscUtils and Registry packages, MIT
 docs/SPEC.md                    # short spec
 docs/virtualbox.md              # VirtualBox operator guide
 docs/proxmox.md                 # Proxmox operator guide
+docs/libvirt.md                 # libvirt operator guide
 ```
 
 `scripts/create-lab-vms.sh` and `scripts/lab-ctl.sh` stay the public commands. They load `scripts/hypervisors/$HYPERVISOR/load.sh` and run that backend's create and control scripts.

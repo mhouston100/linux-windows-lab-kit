@@ -123,6 +123,7 @@ resolve_paths() {
   fi
 
   : "${HYPERVISOR:=virtualbox}"
+  : "${LIBVIRT_URI:=qemu:///system}"
   : "${LAB_PREFIX:=HYD}"
   : "${LAB_NETWORK_NAME:=CorpNet}"
   # The kit ships with this account and its credentials cached on every guest.

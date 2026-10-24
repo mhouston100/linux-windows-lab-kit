@@ -58,6 +58,8 @@ def _platform_label(name: str) -> str:
         return "VirtualBox"
     if name == "proxmox":
         return "Proxmox"
+    if name == "libvirt":
+        return "libvirt"
     return name
 
 
@@ -410,6 +412,10 @@ class LabApp(App[int]):
                 "ssh_identity": self.cfg.pve_ssh_identity,
                 "virtio_iso": self.cfg.pve_virtio_iso,
             },
+            {
+                "uri": self.cfg.libvirt_uri,
+                "virtio_iso": self.cfg.libvirt_virtio_iso,
+            },
         )
 
     @staticmethod
@@ -607,6 +613,7 @@ class LabApp(App[int]):
             "hv-ssh-port",
             "hv-ssh-identity",
             "hv-virtio-iso",
+            "hv-uri",
         }:
             return True
         updates: dict[str, str] = {}
@@ -648,6 +655,15 @@ class LabApp(App[int]):
                 self.query_one("#hv-ga-iso", Input).value = self.cfg.guest_additions_iso
                 return False
             updates["VBOX_GUEST_ADDITIONS_ISO"] = iso
+        elif field_id == "hv-uri":
+            uri = self.query_one("#hv-uri", Input).value.strip() or "qemu:///system"
+            if uri == self.cfg.libvirt_uri:
+                return True
+            if not uri.startswith("qemu://"):
+                self.notify("URI must start with qemu://", severity="warning")
+                self.query_one("#hv-uri", Input).value = self.cfg.libvirt_uri
+                return False
+            updates["LIBVIRT_URI"] = uri
         elif field_id in {"hv-ssh-user", "hv-ssh-host", "hv-ssh-port", "hv-ssh-identity", "hv-virtio-iso"}:
             if not self._save_ssh(field_id, updates):
                 return False
@@ -718,8 +734,8 @@ class LabApp(App[int]):
                 proxmox_ssh_identity_ok,
             ),
             "hv-virtio-iso": (
-                "PVE_VIRTIO_ISO",
-                self.cfg.pve_virtio_iso,
+                "LIBVIRT_VIRTIO_ISO" if self.cfg.hypervisor == "libvirt" else "PVE_VIRTIO_ISO",
+                self.cfg.libvirt_virtio_iso if self.cfg.hypervisor == "libvirt" else self.cfg.pve_virtio_iso,
                 "Virtio ISO must be a .iso file on this machine.",
                 proxmox_virtio_iso_ok,
             ),
@@ -740,6 +756,8 @@ class LabApp(App[int]):
         fields = list(_GENERAL)
         if self.cfg.hypervisor == "virtualbox":
             fields.extend(("hv-vm-dir", "hv-ga-iso"))
+        elif self.cfg.hypervisor == "libvirt":
+            fields.extend(("hv-uri", "hv-vm-dir", "hv-virtio-iso"))
         elif self.cfg.hypervisor == "proxmox":
             fields.extend((
                 "hv-api-host",

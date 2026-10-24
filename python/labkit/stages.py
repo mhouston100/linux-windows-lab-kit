@@ -49,7 +49,7 @@ def stage_needs_sudo(stage: Stage, hypervisor: str) -> bool:
     VirtualBox mounts the disks in stages 3 and 5. Proxmox plants the guest
     agent while it creates the guests, so only stage 3 mounts anything.
     """
-    if hypervisor == "proxmox":
+    if hypervisor in {"proxmox", "libvirt"}:
         return stage.number == 3
     return stage.needs_sudo
 

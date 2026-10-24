@@ -56,6 +56,8 @@ class LabConfig:
     pve_ssh_port: str = ""
     pve_ssh_identity: str = ""
     pve_virtio_iso: str = ""
+    libvirt_uri: str = "qemu:///system"
+    libvirt_virtio_iso: str = ""
 
     @property
     def markers_dir(self) -> Path:
@@ -79,6 +81,9 @@ class LabConfig:
             machines = self.pve_node or "node not set"
         elif self.hypervisor == "virtualbox":
             where = "local"
+            machines = str(self.vm_root)
+        elif self.hypervisor == "libvirt":
+            where = self.libvirt_uri or "qemu:///system"
             machines = str(self.vm_root)
         else:
             where = self.hypervisor
@@ -169,6 +174,8 @@ def load_config(root: Path, kit: str | None = None, dest: str | None = None) -> 
         pve_ssh_port=values.get("PVE_SSH_PORT") or DEFAULT_PVE_SSH_PORT,
         pve_ssh_identity=values.get("PVE_SSH_IDENTITY") or "",
         pve_virtio_iso=values.get("PVE_VIRTIO_ISO") or "",
+        libvirt_uri=values.get("LIBVIRT_URI") or "qemu:///system",
+        libvirt_virtio_iso=values.get("LIBVIRT_VIRTIO_ISO") or values.get("PVE_VIRTIO_ISO") or "",
     )
 
 
@@ -311,6 +318,7 @@ def hypervisor_fields(
     vm_dir: str = "",
     ga_iso: str | None = None,
     proxmox: dict[str, str] | None = None,
+    libvirt: dict[str, str] | None = None,
 ) -> list[HypervisorField]:
     """Settings for one backend. Locked fields stay visible."""
     if name == "virtualbox":
@@ -319,6 +327,20 @@ def hypervisor_fields(
             HypervisorField("disk-format", "Disk format", "VDI", False),
             HypervisorField("ga-iso", "Guest Additions ISO", iso, True),
             HypervisorField("vm-dir", "VM directory", vm_dir, True),
+        ]
+    if name == "libvirt":
+        values = libvirt or {}
+        return [
+            HypervisorField("disk-format", "Disk format", "qcow2", False),
+            HypervisorField("uri", "URI", values.get("uri") or "qemu:///system", True),
+            HypervisorField("vm-dir", "VM directory", vm_dir, True),
+            HypervisorField(
+                "virtio-iso",
+                "Virtio ISO",
+                values.get("virtio_iso", ""),
+                True,
+                placeholder="virtio-win ISO downloaded on this machine",
+            ),
         ]
     if name == "proxmox":
         values = proxmox or {}
@@ -440,10 +462,13 @@ def proxmox_virtio_iso_ok(value: str) -> bool:
 
 
 def virtio_iso_block(config: LabConfig) -> str:
-    """Stop a Proxmox run before any stage when the virtio-win ISO is missing."""
-    if config.hypervisor != "proxmox":
+    """Stop a Proxmox or libvirt run before any stage when the virtio-win ISO is missing."""
+    if config.hypervisor == "libvirt":
+        path = config.libvirt_virtio_iso.strip()
+    elif config.hypervisor == "proxmox":
+        path = config.pve_virtio_iso.strip()
+    else:
         return ""
-    path = config.pve_virtio_iso.strip()
     if not path:
         return "Set Virtio ISO to the virtio-win ISO you downloaded. The run has not started."
     if not proxmox_virtio_iso_ok(path):

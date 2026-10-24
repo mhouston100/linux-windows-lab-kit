@@ -1,0 +1,7 @@
+# libvirt guest ids. Shared lab shape stays in config/topology.tsv.
+# osinfo win11 is the virt-install variant for these Windows Server / Win11 disks.
+# name	ostype
+name	ostype
+HYD-DC1	win11
+HYD-CM1	win11
+HYD-GW1	win11

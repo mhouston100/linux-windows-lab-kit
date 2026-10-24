@@ -310,6 +310,14 @@ class ParallelTests(unittest.TestCase):
         self.assertEqual(fields["vm-dir"].value, "/virtualmachines")
         self.assertTrue(fields["vm-dir"].editable)
         self.assertIn("proxmox", names)
+        self.assertIn("libvirt", names)
+        libvirt = {field.key: field for field in hypervisor_fields("libvirt", "/virtualmachines")}
+        self.assertEqual(libvirt["disk-format"].value, "qcow2")
+        self.assertFalse(libvirt["disk-format"].editable)
+        self.assertEqual(libvirt["uri"].value, "qemu:///system")
+        self.assertTrue(libvirt["uri"].editable)
+        self.assertEqual(libvirt["vm-dir"].value, "/virtualmachines")
+        self.assertTrue(libvirt["virtio-iso"].editable)
         proxmox = {field.key: field for field in hypervisor_fields("proxmox")}
         self.assertEqual(proxmox["disk-format"].value, "qcow2")
         self.assertFalse(proxmox["disk-format"].editable)
