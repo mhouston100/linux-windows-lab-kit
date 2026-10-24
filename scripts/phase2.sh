@@ -15,7 +15,7 @@ lab_install_exit_trap
 
 usage() {
   cat <<EOF
-Usage: phase2.sh [--kit ZIP] [--dest DIR] [--force] [--no-prompt] [--format vdi|vmdk]
+Usage: phase2.sh [--kit ZIP] [--dest DIR] [--force] [--no-prompt] [--format vdi|vmdk|qcow2] [--parallel|--no-parallel]
 
 1) inventory-disks.sh
 2) convert-disks.sh   (flatten differencing VHDX, convert to VDI)
@@ -31,7 +31,7 @@ eval "$(lab_cli_restore_eval)"
 ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --force|--no-prompt|--prompt) ARGS+=("$1") ;;
+    --force|--no-prompt|--prompt|--parallel|--no-parallel) ARGS+=("$1") ;;
     --format) ARGS+=("$1" "${2:?}"); shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "Unknown option: $1" ;;
@@ -40,6 +40,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 load_config 0
+require_virtio_iso
 log "Phase 2 — Disk inventory and conversion"
 print_checklist
 

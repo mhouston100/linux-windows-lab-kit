@@ -1,0 +1,32 @@
+---
+description: Keep the lab kit task board in sync with work agreed in chat
+alwaysApply: true
+---
+
+# Lab kit board
+
+The board is the later reference for this project. Update it in the same turn as the work, before the reply.
+
+Board: `/home/matthewh/.cursor/projects/home-matthewh-projects-linux-windows-lab-kit/canvases/lab-kit-kanban.canvas.tsx`
+
+Open list: `/home/matthewh/.cursor/projects/home-matthewh-projects-linux-windows-lab-kit/canvases/next-steps-review.canvas.tsx`
+
+Both files are outside the git repo. Do not commit them.
+
+## When to add a card
+
+Add a card when the user asks for a piece of work, or when an agreed change is large enough to look up later. Skip questions, discussion, and tiny fixes.
+
+Use the next free id in that area (`UI-07`, `GA-08`, `P3-VM-05`). Set `column` to `next` when it is the current job, `backlog` when it is deferred, and `doing` once work starts. One-line `summary`. `detail` says what was asked.
+
+Do not add a second card for work that already has one. Move that card.
+
+## When work finishes
+
+Set that card's `column` to `done`. Rewrite `summary` and `detail` to what actually landed: behavior, the setting or path involved, and anything still unfinished. Do not leave the original request text on a finished card.
+
+A new card id picks up its `column` from `TASKS`. Moving an existing card does not, because `useCanvasState("task-status-v5")` overrides `Task.column`. After any column change, bump that key (`task-status-v6`, then v7, and so on) so the saved column does not hide the update.
+
+If the open set changed, rewrite the "Still open" callout and replace the table in the open-list canvas so it lists only cards that are not done.
+
+Mention the board link when you add or finish a card.

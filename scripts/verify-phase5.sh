@@ -27,9 +27,18 @@ else
   failed=1
 fi
 
-# Quick start/stop smoke with no inter-VM waits (ACPI may be slow on headless Windows — use poweroff path)
-log "Smoke: start all (--no-wait) then stop"
-if "${SCRIPTS_DIR}/lab-ctl.sh" start --no-wait \
+# Quick start/stop smoke (ACPI may be slow on headless Windows — use poweroff path).
+# VirtualBox skips the settle time. Proxmox keeps it: the first start installs the
+# guest agent and restarts the domain controller, and the next guest must not
+# boot while the controller is still coming back.
+start_args=(--no-wait)
+if [[ "${HYPERVISOR:-virtualbox}" == "proxmox" ]]; then
+  start_args=()
+  log "Smoke: start all with the settle times, then stop"
+else
+  log "Smoke: start all (--no-wait) then stop"
+fi
+if "${SCRIPTS_DIR}/lab-ctl.sh" start ${start_args[@]+"${start_args[@]}"} \
   && "${SCRIPTS_DIR}/lab-ctl.sh" stop; then
   printf '  [OK]   start/stop smoke\n'
 else

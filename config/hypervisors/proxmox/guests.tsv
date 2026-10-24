@@ -1,0 +1,9 @@
+# Proxmox guest ids. Shared lab shape stays in config/topology.tsv.
+# ostype win11 is the Proxmox id for Windows 11 and current Windows Server.
+# vmid values are stable so a later run finds the same guests. Change them
+# before the first create if these numbers are already used on the cluster.
+# name	vmid	ostype
+name	vmid	ostype
+HYD-DC1	9101	win11
+HYD-CM1	9102	win11
+HYD-GW1	9103	win11

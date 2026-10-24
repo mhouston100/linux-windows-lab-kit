@@ -38,6 +38,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 load_config 0
+require_virtio_iso
 log "Phase 4 — Identity / unattend templates"
 print_checklist
 

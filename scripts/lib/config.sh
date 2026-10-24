@@ -67,9 +67,14 @@ resolve_paths() {
   # Optional interactive prompts (defaults under /virtualmachines).
   local do_prompt="${1:-0}"
 
-  : "${SOURCE_DIR:=$DEFAULT_SOURCE_DIR}"
-  : "${TMP_DIR:=$DEFAULT_TMP_DIR}"
   : "${VM_ROOT:=$DEFAULT_VM_ROOT}"
+  if [[ -n "${LAB_WORK_DIR:-}" ]]; then
+    SOURCE_DIR="${LAB_WORK_DIR}/source"
+    TMP_DIR="${LAB_WORK_DIR}/tmp"
+  else
+    : "${SOURCE_DIR:=$DEFAULT_SOURCE_DIR}"
+    : "${TMP_DIR:=$DEFAULT_TMP_DIR}"
+  fi
   : "${LAB_ZIP_PATH:=}"
   : "${GUIDES_ZIP_PATH:=}"
 
@@ -98,11 +103,20 @@ resolve_paths() {
     fi
   fi
 
-  # Command-line --kit / --dest win over lab.env and over the defaults above.
+  # --dest still sets both. The menu can set the work directory and the VM directory apart.
   if [[ -n "${LAB_CLI_DEST:-}" ]]; then
     VM_ROOT="$LAB_CLI_DEST"
+    LAB_WORK_DIR="$LAB_CLI_DEST"
     SOURCE_DIR="${LAB_CLI_DEST}/source"
     TMP_DIR="${LAB_CLI_DEST}/tmp"
+  fi
+  if [[ -n "${LAB_CLI_WORK:-}" ]]; then
+    LAB_WORK_DIR="$LAB_CLI_WORK"
+    SOURCE_DIR="${LAB_CLI_WORK}/source"
+    TMP_DIR="${LAB_CLI_WORK}/tmp"
+  fi
+  if [[ -n "${LAB_CLI_VM_DIR:-}" ]]; then
+    VM_ROOT="$LAB_CLI_VM_DIR"
   fi
   if [[ -n "${LAB_CLI_KIT:-}" ]]; then
     LAB_ZIP_PATH="$LAB_CLI_KIT"
@@ -111,9 +125,12 @@ resolve_paths() {
   : "${HYPERVISOR:=virtualbox}"
   : "${LAB_PREFIX:=HYD}"
   : "${LAB_NETWORK_NAME:=CorpNet}"
-  : "${LAB_ADMIN_USER:=LabAdmin}"
-  : "${LAB_ADMIN_PASSWORD:=}"
-  : "${LAB_DOMAIN:=Corp}"
+  # The kit ships with this account and its credentials cached on every guest.
+  # They cannot change, so they are fixed here and lab.env and the environment
+  # do not override them. python/labkit/config.py names the same account.
+  LAB_ADMIN_USER="LabAdmin"
+  LAB_ADMIN_PASSWORD="P@ssw0rd"
+  LAB_DOMAIN="Corp"
 
   apply_derived_paths
 
@@ -140,6 +157,20 @@ load_config() {
   fi
 
   resolve_paths "$do_prompt"
+}
+
+require_virtio_iso() {
+  [[ "${HYPERVISOR:-virtualbox}" == "proxmox" ]] || return 0
+  if [[ -z "${PVE_VIRTIO_ISO:-}" ]]; then
+    die "Set PVE_VIRTIO_ISO to the virtio-win ISO you downloaded. The run has not started."
+  fi
+  if [[ ! -f "${PVE_VIRTIO_ISO}" ]]; then
+    die "Virtio ISO was not found: ${PVE_VIRTIO_ISO}. The run has not started."
+  fi
+  local lower="${PVE_VIRTIO_ISO,,}"
+  if [[ "$lower" != *.iso ]]; then
+    die "Virtio ISO must be a .iso file: ${PVE_VIRTIO_ISO}"
+  fi
 }
 
 require_lab_zip() {

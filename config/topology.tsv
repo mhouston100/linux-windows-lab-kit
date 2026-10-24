@@ -2,8 +2,8 @@
 # Lab shape only. Hypervisor guest ids live under config/hypervisors/<name>/.
 # Derived from Win11_25H2_SetUpGuide (our summary). Clients need WindowsParent differencing (later).
 HYD-DC1	AD DS / DNS / DHCP / Cert Services	4096	2	HYD-DC1.vdi	corp	-	Domain controller
+HYD-GW1	Remote Access / Internet edge	4096	2	HYD-GW1.vdi	corp	nat	Dual-homed gateway
 HYD-CM1	ConfigMgr 2603 / SQL / WSUS / WDS / ADK	8192	4	HYD-CM1.vdi	corp	-	MECM site server
-HYD-GW1	Remote Access / Internet edge	2048	2	HYD-GW1.vdi	corp	nat	Dual-homed gateway
 # HYD-CLIENT1	Win11 domain-joined	2048	2	(from WindowsParent)	corp	-	Phase 3b
 # HYD-CLIENT2	Win11 domain-joined	2048	2	(from WindowsParent)	corp	-	Phase 3b
 # HYD-CLIENT3	Win11 workgroup	2048	2	(from WindowsParent)	corp	-	Phase 3b

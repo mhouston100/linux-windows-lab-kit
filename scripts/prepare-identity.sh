@@ -14,10 +14,10 @@ while [[ $# -gt 0 ]]; do
       cat <<'EOF'
 Usage: prepare-identity.sh [--no-prompt]
 
-Reads config/lab.env (LAB_ADMIN_*, LAB_DOMAIN, paths) and writes:
+Reads config/lab.env (paths) and the kit account (LAB_ADMIN_*, LAB_DOMAIN) and writes:
   TMP_DIR/identity/credentials.md
   TMP_DIR/identity/first-boot-notes.md
-  TMP_DIR/identity/unattend/<vm>-oobe.xml   (clients; requires password)
+  TMP_DIR/identity/unattend/<vm>-oobe.xml   (clients)
   VM extradata Description for each Phase-3 server VM
 EOF
       exit 0
@@ -36,15 +36,7 @@ ensure_dir "$IDENTITY_DIR" "$UNATTEND_OUT"
 
 CORPNET_INTNET="${LAB_PREFIX}-${LAB_NETWORK_NAME}"
 
-if [[ -z "${LAB_ADMIN_PASSWORD:-}" ]]; then
-  warn "LAB_ADMIN_PASSWORD is empty — set it in config/lab.env for unattend rendering."
-  warn "Kit documentation commonly cites an evaluation password; do not commit secrets."
-  PASS_DISPLAY="(unset — edit config/lab.env)"
-  RENDER_UNATTEND=0
-else
-  PASS_DISPLAY="(set; ${#LAB_ADMIN_PASSWORD} chars)"
-  RENDER_UNATTEND=1
-fi
+RENDER_UNATTEND=1
 
 render() {
   local src="$1" dest="$2"
@@ -53,7 +45,6 @@ render() {
   content="$(cat "$src")"
   content="${content//\{\{LAB_ADMIN_USER\}\}/${LAB_ADMIN_USER}}"
   content="${content//\{\{LAB_ADMIN_PASSWORD\}\}/${LAB_ADMIN_PASSWORD}}"
-  content="${content//\{\{LAB_ADMIN_PASSWORD_DISPLAY\}\}/${PASS_DISPLAY}}"
   content="${content//\{\{LAB_DOMAIN\}\}/${LAB_DOMAIN}}"
   content="${content//\{\{VM_ROOT\}\}/${VM_ROOT}}"
   content="${content//\{\{IDENTITY_DIR\}\}/${IDENTITY_DIR}}"
@@ -97,7 +88,7 @@ done <"$topo"
 cat >"${IDENTITY_DIR}/summary.env" <<EOF
 LAB_DOMAIN=${LAB_DOMAIN}
 LAB_ADMIN_USER=${LAB_ADMIN_USER}
-LAB_ADMIN_PASSWORD_SET=$([[ -n "${LAB_ADMIN_PASSWORD:-}" ]] && echo 1 || echo 0)
+LAB_ADMIN_PASSWORD_SET=1
 CORPNET_INTNET=${CORPNET_INTNET}
 IDENTITY_DIR=${IDENTITY_DIR}
 UNATTEND_OUT=${UNATTEND_OUT}
