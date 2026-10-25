@@ -9,14 +9,14 @@ Bash scripts that build a Windows lab on a Linux host from a Microsoft lab ZIP y
 - **One screen.** `./scripts/lab.sh` opens a Python menu. Pick the hypervisor, check the settings, then Run all or Run next. Reset and Quit are there too. The keys `a`, `n`, `c`, and `q` do the same things. The stage scripts stay Bash.
 - **It picks up where it stopped.** A finished step is skipped until you reset or pass `--force`. Reset removes this lab only. The ZIP and any other virtual machines stay.
 - **Platforms**
-  - [VirtualBox](docs/virtualbox.md) — the backend that has built this lab
-  - [Proxmox](docs/proxmox.md) — API create, start, and stop. Disk images are copied with rsync. Download the virtio-win ISO and set Virtio ISO to that file. Every stage stops until the file exists. Stage 3 plants the QEMU guest agent from it on each disk before the copy
-  - [libvirt](docs/libvirt.md) — local QEMU/KVM. Stage 3 plants the QEMU guest agent on each disk before create
+  - [libvirt](docs/libvirt.md) — local QEMU/KVM. Live run created, started, and stopped the three servers; first-boot set LAN, RRAS, and DHCP
+  - [VirtualBox](docs/virtualbox.md) — local VDI; Guest Additions plant
+  - [Proxmox](docs/proxmox.md) — API create/start/stop; rsync disks; virtio-win ISO required. Nested under VirtualBox fails; finish on KVM
   - VMware Workstation — pending
 
 The project is independent. It is not affiliated with, endorsed by, or redistributed by Microsoft. You supply the lab ZIP and any licenses the software inside it requires. This repository contains orchestration, templates, and two small .NET tools. It does not contain Windows media, product keys, or passwords.
 
-`HYPERVISOR` in `config/lab.env` selects the backend. Shared stages live in `scripts/`. Each backend is a directory under `scripts/hypervisors/` and `config/hypervisors/`. `docs/SPEC.md` is the short design note.
+`HYPERVISOR` in `config/lab.env` selects the backend (`libvirt`, `virtualbox`, or `proxmox`). Shared stages live in `scripts/`. Each backend is under `scripts/hypervisors/` and `config/hypervisors/`. Guides: [libvirt](docs/libvirt.md), [VirtualBox](docs/virtualbox.md), [Proxmox](docs/proxmox.md). `docs/SPEC.md` is the short design note.
 
 ## What the lab is
 
@@ -47,7 +47,7 @@ Client VMs (domain-joined and workgroup Windows 11 machines built from `WindowsP
 
 The screen is a stack of titled boxes. Hypervisor choice is first, with VirtualBox in the first spot. The next box is that platform's settings. Under it are the lab settings: kit, work directory, domain, account, password, and Parallel disks. Fields you can change are text boxes. Fields you cannot change are plain text. Parallel disks is on unless you turn it off. It converts independent server disks at the same time. The machines still boot one after another. Leaving a field writes `config/lab.env`. A blank password keeps the current one, and the password is never shown. Progress for each stage stays on the screen, with Run all, Run next, Reset, and Quit underneath, then the live log. While a stage is running, the settings stay as they were when the stage started. The same lines are appended to `tmp/lab.log` under the work directory (default `/virtualmachines/tmp/lab.log`). That file stays when you quit and when you reset the lab. Interrupt a running stage and the menu comes back; the stage's marker is left unset, so the next run retries it.
 
-The menu asks for your sudo password on this computer only when a stage mounts a guest disk here. VirtualBox does that in stages 3 and 5 for Guest Additions. Proxmox does it in stage 3, to plant the QEMU guest agent on each disk before the copy.
+The menu asks for sudo only when a stage mounts a guest disk here (VirtualBox stages 3 and 5; Proxmox and libvirt stage 3). Stage 3 plants `scripts/guest/first-boot.ps1` plus the guest tools. On first logon that script sets CorpNet addresses, RRAS NAT on the gateway, and DHCP options on the DC (`config/guest-network.tsv`), then installs Guest Additions or qemu-ga.
 
 From a shell without a terminal, `./scripts/lab.sh` prints the checklist and exits 0 only when every marker is present.
 
@@ -100,7 +100,7 @@ Large media stays under the work directory, default `/virtualmachines`. It does 
 
 ## Configuration
 
-`config/lab.env.example` lists every setting. `config/lab.env` is the local copy. Hypervisor settings are on the [VirtualBox](docs/virtualbox.md) and [Proxmox](docs/proxmox.md) pages.
+`config/lab.env.example` lists every setting. `config/lab.env` is the local copy. Hypervisor settings are on the [libvirt](docs/libvirt.md), [VirtualBox](docs/virtualbox.md), and [Proxmox](docs/proxmox.md) pages.
 
 | Setting | Default | Meaning |
 |---------|---------|---------|
@@ -136,7 +136,7 @@ The kit's disks are Hyper-V VHDX, and several of them are differencing disks who
 
 1. `scripts/inventory-disks.sh` records each disk and its parent.
 2. `tools/VhdxFlatten` walks a differencing chain and writes a flat VHDX. A message that the first open could not find a parent is the tool switching to an explicit parent path. Small checkpoint AVHDX files are skipped on purpose.
-3. `qemu-img` converts the flat image to the backend's disk format. VirtualBox uses VDI. Proxmox uses qcow2. `--format vdi|vmdk|qcow2` overrides that. Each disk logs its start and how many seconds it took.
+3. `qemu-img` converts the flat image to the backend's disk format. VirtualBox uses VDI. libvirt and Proxmox use qcow2. `--format vdi|vmdk|qcow2` overrides that. Each disk logs its start and how many seconds it took.
 4. The backend checks that it can open the result.
 
 `VhdxFlatten` is built only when its Release binary is missing or older than the tool's sources. Converted files land in `tmp/convert`. Parallel disks runs up to three independent conversions at once. Parents finish before children.
@@ -194,24 +194,21 @@ On an interactive terminal that command also asks you to type `YES`. `a` does no
 config/lab.env.example          # copy to lab.env; lab.env is gitignored
 config/topology.tsv             # shared VM shape
 config/boot-order.tsv           # start order and pauses
-config/hypervisors/virtualbox/  # VirtualBox guest OS ids
-config/hypervisors/proxmox/     # Proxmox guest ids and VMIDs
-config/hypervisors/libvirt/     # libvirt osinfo variants
+config/guest-network.tsv        # CorpNet addresses / RRAS / DHCP for first-boot
+config/hypervisors/<name>/      # per-backend guest ids
 scripts/lab.sh                  # starts the Python menu
 python/labkit/                  # Textual menu, settings, stage runner
 scripts/phase1.sh … phase6.sh   # one Bash stage each
-scripts/lib/                    # config, checklist, hypervisor loader
-scripts/hypervisors/virtualbox/ # VirtualBox create, control, Guest Additions
-scripts/hypervisors/proxmox/    # Proxmox API create, control, disk import
-scripts/hypervisors/libvirt/    # libvirt / QEMU create, control, guest agent plant
+scripts/lib/                    # config, checklist, hypervisor loader, first-boot plant
+scripts/hypervisors/<name>/     # create, control, guest tools plant
+scripts/guest/first-boot.ps1    # planted RunOnce: LAN, RRAS, DHCP, then guest tools
+scripts/plant-first-boot.sh     # remount disks and re-arm first-boot
 templates/                      # identity notes and client unattend
 tools/VhdxFlatten/              # differencing VHDX flattener
 tools/HiveSet/                  # offline registry writer
 third_party/nuget/              # DiscUtils and Registry packages, MIT
 docs/SPEC.md                    # short spec
-docs/virtualbox.md              # VirtualBox operator guide
-docs/proxmox.md                 # Proxmox operator guide
-docs/libvirt.md                 # libvirt operator guide
+docs/libvirt.md docs/virtualbox.md docs/proxmox.md
 ```
 
 `scripts/create-lab-vms.sh` and `scripts/lab-ctl.sh` stay the public commands. They load `scripts/hypervisors/$HYPERVISOR/load.sh` and run that backend's create and control scripts.

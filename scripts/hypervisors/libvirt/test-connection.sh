@@ -19,12 +19,12 @@ if [[ "$(cat /sys/module/kvm_intel/parameters/nested 2>/dev/null || echo N)" != 
   log "Nested VT-x is off. A nested Proxmox guest will not have KVM."
 fi
 
-if ! virsh -c "$LIBVIRT_URI" version >/dev/null; then
+if ! version="$(virsh -c "$LIBVIRT_URI" version)"; then
   die "Could not open ${LIBVIRT_URI}. Enable the system sockets: sudo systemctl enable --now virtqemud.socket virtnetworkd.socket virtnodedevd.socket virtstoraged.socket virtlogd.socket virtlockd.socket"
 fi
 
-ver="$(virsh -c "$LIBVIRT_URI" version | awk '/library/{print $3; exit}')"
-log "libvirt ${ver:-answered} at ${LIBVIRT_URI}"
+hyp="$(printf '%s\n' "$version" | awk -F': ' '/Running hypervisor/{print $2}')"
+log "libvirt answered at ${LIBVIRT_URI}${hyp:+ (${hyp})}"
 if [[ "$LIBVIRT_URI" == *"/system" ]]; then
   if virsh -c "$LIBVIRT_URI" net-info default >/dev/null 2>&1; then
     log "Network default is present"

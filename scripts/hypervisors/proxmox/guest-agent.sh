@@ -9,6 +9,8 @@
 PVE_GA_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../../lib/offline-disk.sh
 source "${PVE_GA_DIR}/../../lib/offline-disk.sh"
+# shellcheck source=../../lib/first-boot.sh
+source "${PVE_GA_DIR}/../../lib/first-boot.sh"
 
 pve_ga_pick_from_listing() {
   python3 -c '
@@ -105,11 +107,9 @@ pve_ga_prepare_files() {
 # records for HiveSet. $1 user, $2 domain, $3 password.
 pve_ga_registry_records() {
   local user="$1" domain="$2" pass="$3"
-  # RunOnce runs when the account below is signed in by the one-shot autologon,
-  # then Windows deletes the value. The installer clears the autologon.
-  ga_hive_record 'Microsoft\Windows\CurrentVersion\RunOnce' \
-    'PveGuestAgent' sz \
-    'powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Windows\Temp\pve-ga\install-guest-agent.ps1'
+  # RunOnce runs first-boot.ps1 (addresses, RRAS, DHCP), which then starts
+  # the tools installer. Windows deletes the value; the installer clears autologon.
+  fb_runonce_record PveGuestAgent
   ga_hive_record 'Microsoft\Windows NT\CurrentVersion\Winlogon' 'AutoAdminLogon' sz '1'
   ga_hive_record 'Microsoft\Windows NT\CurrentVersion\Winlogon' 'DefaultUserName' sz "$user"
   ga_hive_record 'Microsoft\Windows NT\CurrentVersion\Winlogon' 'DefaultDomainName' sz "$domain"
@@ -146,7 +146,8 @@ pve_ga_signature() {
   stamp="$(dirname "$PVE_GA_LOCAL_STAGE")/source"
   {
     cat "$stamp"
-    sha256sum "${PVE_GA_DIR}/install-guest-agent.ps1" "${PVE_GA_DIR}/restore-held-services.ps1"
+    sha256sum "${PVE_GA_DIR}/install-guest-agent.ps1" "${PVE_GA_DIR}/restore-held-services.ps1" \
+      "$FB_SCRIPT" "$FB_NET"
     pve_ga_hold_patterns "${PVE_GA_NAME:-}"
     printf '%s\n%s\n%s\n' "${LAB_ADMIN_USER:-Administrator}" "${LAB_DOMAIN:-}" "${LAB_ADMIN_PASSWORD:-}"
   } | sha256sum | awk '{print $1}'
@@ -203,7 +204,7 @@ pve_ga_plant_mounted() {
   }
   dir="${win}/Temp/pve-ga"
   sig="$(pve_ga_signature)" || return 1
-  if [[ -f "${dir}/planted" && "$(<"${dir}/planted")" == "$sig" ]]; then
+  if [[ "${FB_FORCE:-0}" != 1 && -f "${dir}/planted" && "$(<"${dir}/planted")" == "$sig" ]]; then
     log "The QEMU guest agent is already on the ${name} disk"
     return 0
   fi
@@ -214,18 +215,28 @@ pve_ga_plant_mounted() {
   fi
   log "Copying the virtio-serial driver and the guest agent onto ${name}"
   held_keep=""
+  installed_keep=""
   if [[ -f "${dir}/held-services.tsv" ]]; then
     held_keep="$(mktemp "${TMPDIR:-/tmp}/pve-ga-held.XXXXXX")"
     cp -- "${dir}/held-services.tsv" "$held_keep" || return 1
+  fi
+  if [[ -f "${dir}/installed.ok" ]]; then
+    installed_keep="$(mktemp "${TMPDIR:-/tmp}/pve-ga-ok.XXXXXX")"
+    cp -- "${dir}/installed.ok" "$installed_keep" || return 1
   fi
   rm -rf "$dir"
   mkdir -p "$dir" || return 1
   cp -a "${PVE_GA_LOCAL_STAGE}/." "${dir}/" || return 1
   cp -a "${PVE_GA_DIR}/install-guest-agent.ps1" "${dir}/install-guest-agent.ps1" || return 1
   cp -a "${PVE_GA_DIR}/restore-held-services.ps1" "${dir}/restore-held-services.ps1" || return 1
+  fb_stage_files "$win" || return 1
   if [[ -n "$held_keep" ]]; then
     cp -- "$held_keep" "${dir}/held-services.tsv" || return 1
     rm -f "$held_keep"
+  fi
+  if [[ -n "$installed_keep" ]]; then
+    cp -- "$installed_keep" "${dir}/installed.ok" || return 1
+    rm -f "$installed_keep"
   fi
   pve_ga_hold_services "$name" "$win" "$dir" || return 1
   if [[ ! -f "${hive}.before-pve-ga" ]]; then

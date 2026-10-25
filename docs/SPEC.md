@@ -1,8 +1,8 @@
 # Lab Kit Spec
 
-Independent Linux orchestration for a Windows 11 / Server / Microsoft 365 / MECM-style lab. `HYPERVISOR` selects the backend. VirtualBox (`scripts/hypervisors/virtualbox/`) is the backend that has built the lab. Proxmox (`scripts/hypervisors/proxmox/`) is written and has not been run on a live node. Shared lab shape stays in `config/topology.tsv`.
+Independent Linux orchestration for a Windows 11 / Server / Microsoft 365 / MECM-style lab. `HYPERVISOR` selects the backend. libvirt (`scripts/hypervisors/libvirt/`) has a live local create/start/stop with first-boot LAN and RRAS. VirtualBox and Proxmox backends are also present; nested Proxmox under VirtualBox fails (EPT), so finish that path under KVM. Shared lab shape stays in `config/topology.tsv`.
 
-The operator guide is [README.md](../README.md), with [VirtualBox](virtualbox.md) and [Proxmox](proxmox.md) beside it. Users supply the original Microsoft lab ZIP and any required licenses. This project does not redistribute Microsoft media or scripts.
+The operator guide is [README.md](../README.md), with [libvirt](libvirt.md), [VirtualBox](virtualbox.md), and [Proxmox](proxmox.md). Users supply the original Microsoft lab ZIP and any required licenses. This project does not redistribute Microsoft media or scripts.
 
 ## Storage paths
 
@@ -10,7 +10,7 @@ The operator guide is [README.md](../README.md), with [VirtualBox](virtualbox.md
 |----------|---------|------|
 | `SOURCE_DIR` | `/virtualmachines/source` | ZIP + immediate extract |
 | `TMP_DIR` | `/virtualmachines/tmp` | ZPAQ originals, setup unpack, organize, convert scratch |
-| `VM_ROOT` | `/virtualmachines` | VirtualBox machine folder + final disks. Proxmox does not put guests here |
+| `VM_ROOT` | `/virtualmachines` | VirtualBox / libvirt machine folders and final disks. Proxmox does not put guests here |
 | `LAB_ZIP_PATH` | prompted | User-supplied lab archive |
 
 ## Topology (from Set Up Guide — our words)
@@ -26,10 +26,10 @@ The operator guide is [README.md](../README.md), with [VirtualBox](virtualbox.md
 
 ### Networks
 
-| Logical name | VirtualBox | Proxmox | Purpose |
-|--------------|------------|---------|---------|
-| CorpNet | Internal network `HYD-CorpNet` | Bridge in `PVE_BRIDGE` | Lab corporate LAN |
-| Internet | NAT on the gateway | Bridge in `PVE_INTERNET_BRIDGE` | Outbound Internet for the gateway |
+| Logical name | VirtualBox | libvirt | Proxmox | Purpose |
+|--------------|------------|---------|---------|---------|
+| CorpNet | Internal `HYD-CorpNet` | Network `HYD-CorpNet` | Bridge `PVE_BRIDGE` | Lab corporate LAN |
+| Internet | NAT on the gateway | libvirt `default` NAT | Bridge `PVE_INTERNET_BRIDGE` | Outbound Internet for the gateway |
 
 ### Default credentials (override via config)
 
@@ -38,7 +38,7 @@ The operator guide is [README.md](../README.md), with [VirtualBox](virtualbox.md
 | Local Administrator | `Administrator` | set in `lab.env` (kit default was documented as evaluation password) |
 | Domain admin | `CORP\LabAdmin` | set in `lab.env` |
 
-See `config/topology.tsv` for the shared lab shape. Guest ids are `config/hypervisors/virtualbox/guests.tsv` and `config/hypervisors/proxmox/guests.tsv`.
+See `config/topology.tsv` for the shared lab shape and `config/guest-network.tsv` for first-boot addresses. Guest ids live under `config/hypervisors/<name>/`.
 
 ## Phase goals
 
@@ -60,4 +60,4 @@ See `config/topology.tsv` for the shared lab shape. Guest ids are `config/hyperv
 | Differencing VHDX | `tools/VhdxFlatten` (DiscUtils 0.16.13, MIT, included under `third_party/nuget`) |
 | Offline registry | `tools/HiveSet` (DiscUtils.Registry, same MIT packages) |
 | Convert | `qemu-img` |
-| Hypervisor | `scripts/hypervisors/${HYPERVISOR}` (`VBoxManage` for `virtualbox`, the API for `proxmox`) |
+| Hypervisor | `scripts/hypervisors/${HYPERVISOR}` (`virsh` / `virt-install`, `VBoxManage`, or the Proxmox API) |

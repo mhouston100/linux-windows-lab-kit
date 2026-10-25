@@ -38,6 +38,13 @@ hv_verify_create() {
       failed=1
     fi
 
+    if printf '%s' "$xml" | rg -q 'name=.org.qemu.guest_agent.0.'; then
+      printf '  [OK]   QEMU guest agent channel: %s\n' "$name"
+    else
+      printf '  [FAIL] no QEMU guest agent channel on %s\n' "$name"
+      failed=1
+    fi
+
     if printf '%s' "$xml" | rg -q "network>${corpnet}<|network='${corpnet}'"; then
       printf '  [OK]   CorpNet on nic1: %s\n' "$name"
     else

@@ -1272,6 +1272,20 @@ class GuestAgentTests(unittest.TestCase):
         self.assertIn("DefaultPassword", text)
         self.assertNotIn("Remove-PveStartupHook", text)
 
+    def test_first_boot_script_covers_the_lab_lan(self) -> None:
+        repo = Path(__file__).resolve().parents[2]
+        script = (repo / "scripts" / "guest" / "first-boot.ps1").read_text(encoding="utf-8")
+        net = (repo / "config" / "guest-network.tsv").read_text(encoding="utf-8")
+        self.assertIn("guest-network.tsv", script)
+        self.assertIn("Get-LabShortName", script)
+        self.assertIn("Test-LabGuestName", script)
+        self.assertIn("RemoteAccess", script)
+        self.assertIn("Add-DhcpServerInDC", script)
+        self.assertIn("HYD-GW1", net)
+        self.assertIn("HYD-DC1", net)
+        self.assertIn("10.0.0.1", net)
+        self.assertIn("10.0.0.2", net)
+
     def test_registry_records_set_runonce_and_a_one_shot_autologon(self) -> None:
         repo = Path(__file__).resolve().parents[2]
         script = (
@@ -1289,7 +1303,7 @@ class GuestAgentTests(unittest.TestCase):
         }
         run_once = r"Microsoft\Windows\CurrentVersion\RunOnce"
         winlogon = r"Microsoft\Windows NT\CurrentVersion\Winlogon"
-        self.assertIn("install-guest-agent.ps1", records[(run_once, "PveGuestAgent")][1])
+        self.assertIn("first-boot.ps1", records[(run_once, "PveGuestAgent")][1])
         self.assertEqual(records[(winlogon, "AutoAdminLogon")], ("sz", "1"))
         self.assertEqual(records[(winlogon, "DefaultUserName")], ("sz", "LabAdmin"))
         self.assertEqual(records[(winlogon, "DefaultDomainName")], ("sz", "Corp"))

@@ -127,8 +127,10 @@ cmd_start() {
   for i in "${!NAMES[@]}"; do
     name="${NAMES[$i]}"
     state="$(hv_vm_state "$name")"
+    lv_ensure_agent_channel "$name"
     if [[ "$state" != "running" ]]; then
       log "Starting ${name} (order=${ORDERS[$i]})"
+      lv_allow_qemu_disk "${VM_ROOT}/${name}/${name}.qcow2"
       lv_virsh start "$name"
     else
       log "${name} is already running"

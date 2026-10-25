@@ -1,0 +1,9 @@
+# guest	role	adapter	address	prefix	gateway	dns	nat
+# Planted to C:\Windows\Temp\lab-kit\guest-network.tsv and read by first-boot.ps1.
+# adapter "-" means pick by role: wan is the Up NIC with DHCP outside 10.0.0.0/24;
+# corp is the other Up NIC. Do not pin Ethernet 3/4 — those names move.
+# address "dhcp" means leave that NIC alone. gateway "-" means no default route.
+HYD-GW1	corp	-	10.0.0.1	24	-	10.0.0.2,192.168.1.1	private
+HYD-GW1	wan	-	dhcp	-	-	-	full
+HYD-DC1	corp	-	10.0.0.2	24	10.0.0.1	10.0.0.2	-
+HYD-CM1	corp	-	dhcp	-	-	-	-

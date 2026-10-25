@@ -6,6 +6,8 @@
 HV_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../../lib/offline-disk.sh
 source "${HV_DIR}/../../lib/offline-disk.sh"
+# shellcheck source=../../lib/first-boot.sh
+source "${HV_DIR}/../../lib/first-boot.sh"
 
 ga_iso_path() {
   local cand listed=""
@@ -133,9 +135,7 @@ ga_write_registry() {
   {
     # HKLM RunOnce runs when LabAdmin is logged on by the one-shot autologon
     # below, then Windows deletes the value. The user hive is left alone.
-    ga_hive_record 'Microsoft\Windows\CurrentVersion\RunOnce' \
-      'VBoxGuestAdditions' sz \
-      'powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Windows\Temp\vbox-ga\install-guest-additions.ps1'
+    fb_runonce_record VBoxGuestAdditions
     ga_hive_record 'Microsoft\Windows NT\CurrentVersion\Winlogon' \
       'AutoAdminLogon' sz '1'
     ga_hive_record 'Microsoft\Windows NT\CurrentVersion\Winlogon' \
@@ -200,32 +200,35 @@ ga_prepare_mounted() {
     warn "Windows directory not found on $name"
     return 1
   }
-  if ga_additions_present "$win"; then
-    log "Guest Additions already on the $name disk"
-    return 0
-  fi
-  ga_extract_iso || return 1
-  staged="$GA_ISO_DIR"
-  staged_ps="${HV_DIR}/install-guest-additions.ps1"
-  if [[ ! -f "$staged_ps" ]]; then
-    warn "Missing $staged_ps"
-    return 1
-  fi
-  log "Copying Guest Additions files onto $name"
-  rm -rf "${win}/Temp/vbox-ga"
-  mkdir -p "${win}/Temp/vbox-ga"
-  cp -a "${staged}/." "${win}/Temp/vbox-ga/" || return 1
-  cp -a "$staged_ps" "${win}/Temp/vbox-ga/install-guest-additions.ps1" || return 1
   hive="$(find "$win" -maxdepth 4 -type f -ipath '*/system32/config/SOFTWARE' -print -quit)"
   if [[ -z "$hive" ]]; then
     warn "SOFTWARE hive not found on $name"
     return 1
   fi
-  if [[ ! -f "${hive}.before-ga" ]]; then
-    cp -a -- "$hive" "${hive}.before-ga" || return 1
+  if ga_additions_present "$win"; then
+    log "Guest Additions already on the $name disk"
+  else
+    ga_extract_iso || return 1
+    staged="$GA_ISO_DIR"
+    staged_ps="${HV_DIR}/install-guest-additions.ps1"
+    if [[ ! -f "$staged_ps" ]]; then
+      warn "Missing $staged_ps"
+      return 1
+    fi
+    log "Copying Guest Additions files onto $name"
+    rm -rf "${win}/Temp/vbox-ga"
+    mkdir -p "${win}/Temp/vbox-ga"
+    cp -a "${staged}/." "${win}/Temp/vbox-ga/" || return 1
+    cp -a "$staged_ps" "${win}/Temp/vbox-ga/install-guest-additions.ps1" || return 1
+    if [[ ! -f "${hive}.before-ga" ]]; then
+      cp -a -- "$hive" "${hive}.before-ga" || return 1
+    fi
   fi
-  log "Setting one-shot autologon and RunOnce on $name"
-  ga_write_registry "$hive" || return 1
+  fb_stage_files "$win" || return 1
+  if fb_needs_registry "$win"; then
+    log "Setting one-shot autologon and RunOnce on $name"
+    ga_write_registry "$hive" || return 1
+  fi
 }
 
 # Block until the guest reports additions, or GA_WAIT_SECONDS (default 30 min).

@@ -93,13 +93,14 @@ place_disk() {
   ensure_dir "$(dirname "$dest")"
   if [[ -e "$dest" ]]; then
     log "Keeping existing disk $dest"
+    lv_allow_qemu_disk "$dest"
     return 0
   fi
   log "Placing disk → $dest"
-  if cp --reflink=always -- "$src" "$dest" 2>/dev/null; then
-    return 0
+  if ! cp --reflink=always -- "$src" "$dest" 2>/dev/null; then
+    cp -- "$src" "$dest" || die "Could not copy $src to $dest"
   fi
-  cp -- "$src" "$dest" || die "Could not copy $src to $dest"
+  lv_allow_qemu_disk "$dest"
 }
 
 create_one_vm() {
@@ -129,6 +130,7 @@ create_one_vm() {
     --boot uefi
     --os-variant win11
     --disk "path=${dest},format=qcow2,bus=sata"
+    --channel unix,target_type=virtio,name=org.qemu.guest_agent.0
     --import
     --noautoconsole
     --noreboot
@@ -144,6 +146,7 @@ create_one_vm() {
     die "Unsupported nic2='${nic2}' for ${name}"
   fi
   virt-install "${args[@]}"
+  lv_ensure_agent_channel "$name"
   log "Created ${name}"
 }
 

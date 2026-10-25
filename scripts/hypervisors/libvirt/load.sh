@@ -14,6 +14,60 @@ lv_virsh() {
   virsh -c "$LIBVIRT_URI" "$@"
 }
 
+# QEMU on qemu:///system runs as libvirt-qemu. It must traverse VM_ROOT
+# and read the qcow2. Do not make VM_ROOT world-readable.
+lv_allow_qemu_disk() {
+  local dest="$1" dir
+  [[ -f "$dest" ]] || return 0
+  chmod 644 "$dest"
+  dir="$(dirname "$dest")"
+  chmod 755 "$dir"
+  if [[ -n "${VM_ROOT:-}" && -d "$VM_ROOT" ]]; then
+    chmod 711 "$VM_ROOT"
+  fi
+}
+
+lv_has_agent_channel() {
+  lv_virsh dumpxml "$1" 2>/dev/null | rg -q 'name=.org.qemu.guest_agent.0.'
+}
+
+lv_attach_xml() {
+  local name="$1" tmp live=0
+  tmp="$(mktemp)"
+  cat >"$tmp"
+  [[ "$(hv_vm_state "$name")" == "running" ]] && live=1
+  if [[ "$live" -eq 1 ]]; then
+    if ! lv_virsh attach-device "$name" "$tmp" --live --config; then
+      lv_virsh attach-device "$name" "$tmp" --config
+    fi
+  else
+    lv_virsh attach-device "$name" "$tmp" --config
+  fi
+  rm -f "$tmp"
+}
+
+# Stage 5 waits on qemu-agent-command. virt-install must expose the
+# virtio-serial channel; existing guests get it here on start.
+lv_ensure_agent_channel() {
+  local name="$1" xml
+  hv_vm_exists "$name" || return 0
+  lv_has_agent_channel "$name" && return 0
+  xml="$(lv_virsh dumpxml "$name")"
+  if ! printf '%s' "$xml" | rg -q 'type=.virtio-serial.'; then
+    log "Adding virtio-serial on ${name}"
+    lv_attach_xml "$name" >/dev/null <<'EOF'
+<controller type='virtio-serial' index='0'/>
+EOF
+  fi
+  log "Adding QEMU guest agent channel on ${name}"
+  lv_attach_xml "$name" >/dev/null <<'EOF'
+<channel type='unix'>
+  <source mode='bind'/>
+  <target type='virtio' name='org.qemu.guest_agent.0'/>
+</channel>
+EOF
+}
+
 lv_state_word() {
   case "$1" in
     running) printf 'running' ;;
@@ -71,7 +125,9 @@ hv_local_vm_dirs() {
 }
 
 hv_set_description() {
-  lv_virsh desc "$1" --title "$1" -- "$2" >/dev/null
+  # --title writes the window title. The checkpoint reads the description.
+  # Shut-off guests only have persistent config.
+  lv_virsh desc "$1" --config --new-desc "$2" >/dev/null
 }
 
 hv_description_ok() {
