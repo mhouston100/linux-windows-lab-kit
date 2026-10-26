@@ -1,0 +1,9 @@
+<Project>
+  <!-- IDE C# LS loads HiveSet + VhdxFlatten in parallel; NuGet audit then races
+       on ~/.local/share/NuGet/http-cache/.../vuln_index.dat-new and logs
+       "Access to the path ... is denied". Audit is not useful for these two
+       DiscUtils console tools. -->
+  <PropertyGroup>
+    <NuGetAudit>false</NuGetAudit>
+  </PropertyGroup>
+</Project>
